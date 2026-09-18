@@ -139,6 +139,95 @@ reprojected to `output_srid`. `numberReturned` and `truncated` are added to the
 `FeatureCollection` as foreign members — `truncated` is `true` when the limit
 was reached and there may be more data.
 
+### Clip area examples
+
+Every example below runs against the `docker compose` stack as it comes up,
+and the feature counts are what it returns.
+
+**WKT** — for humans, QGIS and the command line:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "wkt": "POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, -3.25 56.00, -3.25 55.92))"
+    }
+  }'                                                        # 2 features
+```
+
+**EWKT** — the `SRID=` prefix sets the CRS of the clip area, so you can cut
+with a British National Grid polygon and still get WGS84 back:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "wkt": "SRID=27700;POLYGON((320000 670000, 340000 670000, 340000 680000, 320000 680000, 320000 670000))",
+      "properties": ["lex_d"]
+    }
+  }'                                                       # 10 features
+```
+
+**GeoJSON geometry** — what `layer.toGeoJSON()` and
+`GeoJSON().writeGeometryObject()` give you:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-3.25, 55.92], [-3.10, 55.92], [-3.10, 56.00],
+                         [-3.25, 56.00], [-3.25, 55.92]]]
+      }
+    }
+  }'                                                        # 2 features
+```
+
+**GeoJSON FeatureCollection** — post `draw.getAll()` straight through; two
+drawn boxes are merged into one area of interest:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "geometry": {
+        "type": "FeatureCollection",
+        "features": [
+          {"type": "Feature", "properties": {}, "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[-3.25, 55.92], [-3.15, 55.92], [-3.15, 56.00],
+                             [-3.25, 56.00], [-3.25, 55.92]]]}},
+          {"type": "Feature", "properties": {}, "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[-2.95, 56.05], [-2.85, 56.05], [-2.85, 56.15],
+                             [-2.95, 56.15], [-2.95, 56.05]]]}}
+        ]
+      }
+    }
+  }'                    # 3 features: BH001 and BH002 from the first box,
+                        # BH003 from the second
+```
+
+**bbox** — clip to the map view, here with the guard rails a web map wants:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "srid": 4326,
+      "simplify": true,
+      "properties": ["lex_d", "max_period"]
+    }
+  }'                                                       # 15 features
+```
+
 ### Download formats
 
 | `format` | Media type | Notes |
@@ -149,7 +238,20 @@ was reached and there may be more data.
 
 `geopackage` and `flatgeobuf` are accepted as aliases.
 
+The same clip in each format — 15 features of the bedrock layer, all
+attributes:
+
 ```bash
+# GeoJSON: the default, straight into a map or jq
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02]
+    }
+  }' -o bedrock.geojson
+
+# GeoPackage: open it in QGIS
 curl -s -X POST http://localhost:5000/processes/clip/execution \
   -H 'Content-Type: application/json' -d '{
     "inputs": {
@@ -157,13 +259,37 @@ curl -s -X POST http://localhost:5000/processes/clip/execution \
       "bbox": [-3.30, 55.90, -3.05, 56.02],
       "format": "gpkg"
     }
-  }' -o bedrock.gpkg
+  }' -o bedrock.gpkg                                          # ~116 kB
+
+# FlatGeobuf: the same data for the browser
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "fgb"
+    }
+  }' -o bedrock.fgb                                            # ~25 kB
+```
+
+`output_srid` applies to the file too, so this one opens in QGIS as British
+National Grid:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_faults",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "gpkg",
+      "output_srid": 27700
+    }
+  }' -o faults-bng.gpkg
 ```
 
 The files are written with OGR (through fiona, which the pygeoapi image
 ships as `python3-fiona`); a server without it still serves GeoJSON and
-refuses the other two with a clear error. On a 15 feature clip of the
-bedrock layer the GeoPackage is ~114 kB and the FlatGeobuf ~14 kB.
+refuses the other two with a clear error.
 
 Worth knowing before you wire up a download button:
 

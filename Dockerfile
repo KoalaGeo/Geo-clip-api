@@ -33,7 +33,10 @@ COPY pygeoapi-config.yml /pygeoapi/local.config.yml
 # the process manager writes job results to output_dir and does not create
 # it, so the entrypoint below makes both manager paths before starting
 COPY docker/entrypoint.sh /geoclip-entrypoint.sh
-RUN chmod +x /geoclip-entrypoint.sh \
+# the CR stripping guards against a CRLF checkout on Windows, which would
+# otherwise make /bin/bash fail to read the script
+RUN sed -i 's/\r$//' /geoclip-entrypoint.sh \
+    && chmod +x /geoclip-entrypoint.sh \
     && mkdir -p /tmp/pygeoapi-process-outputs
 
 ENV PYGEOAPI_CONFIG=/pygeoapi/local.config.yml \

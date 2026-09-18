@@ -231,6 +231,27 @@ docker run --rm -p 5000:80 \
   geo-clip-api
 ```
 
+### Windows checkouts
+
+The shell scripts run inside Linux containers but are read from the host
+checkout, so CRLF line endings break them:
+
+```
+/load-geopackage.sh: line 14: : not found
+/load-geopackage.sh: set: line 15: illegal option -
+```
+
+`.gitattributes` keeps every text file LF regardless of `core.autocrlf`, the
+image strips CR from its entrypoint at build time, and the compose loader
+strips CR before running. A checkout made *before* `.gitattributes` existed
+keeps its CRLF files until git rewrites them, which the loader tolerates; to
+normalise the working tree anyway (this discards uncommitted changes):
+
+```bash
+git rm --cached -r .
+git reset --hard
+```
+
 ## Development
 
 ```bash

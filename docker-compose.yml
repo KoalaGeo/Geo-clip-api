@@ -44,7 +44,10 @@ services:
     volumes:
       - ./tests:/data:ro
       - ./docker/load-geopackage.sh:/load-geopackage.sh:ro
-    entrypoint: ["/bin/sh", "/load-geopackage.sh"]
+    # the script is mounted from the host checkout, which on Windows may
+    # have CRLF line endings that /bin/sh cannot read, so strip them first
+    # (.gitattributes keeps fresh checkouts LF; this covers older ones)
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /load-geopackage.sh > /tmp/load-geopackage.sh && exec /bin/sh /tmp/load-geopackage.sh"]
     restart: "no"
 
   api:

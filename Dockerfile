@@ -30,7 +30,20 @@ print('geoclip plugins importable')"
 # otherwise; mount your own over this one to change published tables
 COPY pygeoapi-config.yml /pygeoapi/local.config.yml
 
+# the process manager writes job results to output_dir and does not create
+# it, so the entrypoint below makes both manager paths before starting
+COPY docker/entrypoint.sh /geoclip-entrypoint.sh
+# the CR stripping guards against a CRLF checkout on Windows, which would
+# otherwise make /bin/bash fail to read the script
+RUN sed -i 's/\r$//' /geoclip-entrypoint.sh \
+    && chmod +x /geoclip-entrypoint.sh \
+    && mkdir -p /tmp/pygeoapi-process-outputs
+
 ENV PYGEOAPI_CONFIG=/pygeoapi/local.config.yml \
-    PYGEOAPI_OPENAPI=/pygeoapi/local.openapi.yml
+    PYGEOAPI_OPENAPI=/pygeoapi/local.openapi.yml \
+    GEOCLIP_PROCESS_OUTPUT_DIR=/tmp/pygeoapi-process-outputs \
+    GEOCLIP_JOB_DB=/tmp/pygeoapi-process-manager.db
+
+ENTRYPOINT ["/geoclip-entrypoint.sh"]
 
 EXPOSE 80

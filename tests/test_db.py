@@ -6,7 +6,8 @@
 
 import pytest
 
-from geoclip.db import ClipDatabase, split_table_name, validate_identifier
+from geoclip.db import (ClipDatabase, as_bool, as_list, split_table_name,
+                        validate_identifier)
 from geoclip.errors import InvalidInputError, TableNotFoundError
 
 from tests.fakes import BEDROCK_ROW, BOREHOLES_ROW, patch_cursor
@@ -20,7 +21,11 @@ def db():
 
 # ---------------------------------------------------------------- identifiers
 
-@pytest.mark.parametrize('value', ['roads', 'os_open_roads', '_x', 'a1$b'])
+@pytest.mark.parametrize('value', [
+    'roads', 'os_open_roads', '_x', 'a1$b',
+    # OGR layer names routinely start with a digit
+    '625k_v5_bedrock_geology'
+])
 def test_valid_identifiers(value):
     assert validate_identifier(value) == value
 
@@ -28,8 +33,8 @@ def test_valid_identifiers(value):
 @pytest.mark.parametrize('value', [
     'roads; DROP TABLE users',
     'roads"',
-    '1roads',
     'roads-2',
+    '625k geology',
     'public.roads',
     '',
     None,
@@ -52,6 +57,56 @@ def test_split_qualified_table_name():
 def test_split_rejects_bad_names(value):
     with pytest.raises(InvalidInputError):
         split_table_name(value)
+
+
+# ------------------------------------------------------------ list settings
+
+@pytest.mark.parametrize('value,expected', [
+    (None, []),
+    ('', []),
+    ([], []),
+    ('public', ['public']),
+    ('public, geology', ['public', 'geology']),
+    ('public,,geology,', ['public', 'geology']),
+    (['public', 'geology'], ['public', 'geology']),
+    ((1, 2), ['1', '2'])
+])
+def test_as_list(value, expected):
+    assert as_list(value, 'allowed_schemas') == expected
+
+
+def test_as_list_rejects_other_types():
+    with pytest.raises(InvalidInputError, match='comma separated'):
+        as_list({'schema': 'public'}, 'allowed_schemas')
+
+
+@pytest.mark.parametrize('value,expected', [
+    (None, False), ('', False), (True, True), (False, False),
+    ('true', True), ('TRUE', True), ('yes', True), ('1', True),
+    ('false', False), ('no', False), ('0', False)
+])
+def test_as_bool(value, expected):
+    assert as_bool(value, 'make_valid_source') is expected
+
+
+def test_as_bool_rejects_nonsense():
+    with pytest.raises(InvalidInputError, match='boolean'):
+        as_bool('perhaps', 'make_valid_source')
+
+
+def test_list_settings_accept_environment_style_strings():
+    # pygeoapi expands ${VAR} to a scalar, so lists arrive comma separated
+    db = ClipDatabase({
+        'allowed_schemas': 'public, geology',
+        'allowed_tables': 'public.boreholes,bedrock',
+        'excluded_tables': '',
+        'make_valid_source': 'true'
+    })
+
+    assert db.allowed_schemas == ['public', 'geology']
+    assert db.allowed_tables == frozenset(['public.boreholes', 'bedrock'])
+    assert db.excluded_tables == frozenset()
+    assert db.make_valid_source is True
 
 
 # -------------------------------------------------------------- configuration

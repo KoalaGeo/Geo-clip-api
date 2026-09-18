@@ -31,6 +31,23 @@ pytestmark = pytest.mark.skipif(
 EDINBURGH = ('POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, '
              '-3.25 56.00, -3.25 55.92))')
 
+#: loaded from tests/625k_V5_Geology_UK_EPSG27700.gpkg by the compose
+#: gpkg-loader stage; the tests using it skip when it is not there
+GEOPACKAGE_TABLE = '625k_v5_bedrock_geology'
+
+
+def coordinates(geometry):
+    """yield every (x, y) of a GeoJSON geometry"""
+
+    def walk(part):
+        if part and isinstance(part[0], (int, float)):
+            yield part
+        else:
+            for item in part:
+                yield from walk(item)
+
+    yield from walk(geometry['coordinates'])
+
 
 @pytest.fixture(scope='module')
 def db():
@@ -47,8 +64,10 @@ def test_demo_tables_are_listed(db):
 
 
 def test_match_filter(db):
-    assert [t['name'] for t in db.list_tables(match='bedrock')] == \
-        ['public.bedrock']
+    names = [t['name'] for t in db.list_tables(match='bedrock')]
+
+    assert 'public.bedrock' in names
+    assert all('bedrock' in name for name in names)
 
 
 def test_clip_points(db):
@@ -131,3 +150,37 @@ def test_empty_result_is_still_geojson(db):
         'numberReturned': 0,
         'truncated': False
     }
+
+
+@pytest.fixture
+def geopackage_table(db):
+    try:
+        return db.get_table(GEOPACKAGE_TABLE)
+    except TableNotFoundError:
+        pytest.skip(f'{GEOPACKAGE_TABLE} is not loaded')
+
+
+def test_geopackage_layer_is_listed(db, geopackage_table):
+    # the layer name starts with a digit, which PostgreSQL only accepts
+    # quoted; it must survive validation and identifier composition
+    assert geopackage_table['srid'] == 27700
+    assert geopackage_table['geometry_column'] == 'geom'
+
+
+def test_clip_geopackage_layer(db, geopackage_table):
+    collection = db.clip(geopackage_table, EDINBURGH, limit=50)
+
+    assert collection['numberReturned'] > 0
+
+    for feature in collection['features']:
+        for x, y in coordinates(feature['geometry']):
+            # clipped to the area of interest, allowing for rounding
+            assert -3.2501 <= x <= -3.0999
+            assert 55.9199 <= y <= 56.0001
+
+
+def test_geopackage_layer_keeps_its_attributes(db, geopackage_table):
+    collection = db.clip(geopackage_table, EDINBURGH, limit=1,
+                         properties=['lex_d'])
+
+    assert list(collection['features'][0]['properties']) == ['lex_d']

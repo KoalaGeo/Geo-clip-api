@@ -1,0 +1,12 @@
+# Shell scripts are executed inside Linux containers, from the checkout on
+# the host: a CRLF checkout makes /bin/sh fail with
+# "set: illegal option -" and ": not found". Keep them LF everywhere,
+# whatever core.autocrlf says on the machine doing the checkout.
+* text=auto eol=lf
+
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.sql text eol=lf
+
+*.gpkg binary

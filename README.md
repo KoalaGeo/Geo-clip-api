@@ -169,6 +169,10 @@ resources:
 | `allowed_schemas` | `[public]` | only these schemas are listed or clipped; system schemas are always refused |
 | `allowed_tables` | all | optional whitelist (`public.boreholes` or `boreholes`) |
 | `excluded_tables` | none | optional blacklist; wins over the whitelist |
+
+The three list settings accept either a YAML list or a comma separated
+string, because pygeoapi expands `${VAR}` to a scalar — an environment
+variable can never produce a YAML list.
 | `default_limit` | `1000` | features returned when the request sets no `limit` |
 | `max_features` | `10000` | hard ceiling on `limit` |
 | `statement_timeout` | `60000` | per-query timeout in ms |
@@ -176,10 +180,24 @@ resources:
 | `pool_min` / `pool_max` | `1` / `5` | connection pool size |
 | `make_valid_source` | `false` | set `true` if the source geometries are not OGC valid |
 
-Environment variables used by the shipped config: `POSTGRES_HOST`,
-`POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`,
-`GEOCLIP_SCHEMA`, `GEOCLIP_DEFAULT_LIMIT`, `GEOCLIP_MAX_FEATURES`,
-`GEOCLIP_STATEMENT_TIMEOUT`, `PYGEOAPI_SERVER_URL`, `PYGEOAPI_LOGLEVEL`.
+Every setting in the shipped config is driven by an environment variable,
+so the published image is configured without editing YAML inside it:
+
+| Variable | Sets |
+| --- | --- |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | connection |
+| `GEOCLIP_DSN` or `DATABASE_URL` | libpq connection string; **takes precedence over the `POSTGRES_*` values** |
+| `GEOCLIP_SCHEMAS` | published schemas, comma separated |
+| `GEOCLIP_ALLOWED_TABLES` | whitelist, comma separated; empty means every table in those schemas |
+| `GEOCLIP_EXCLUDED_TABLES` | blacklist, comma separated |
+| `GEOCLIP_DEFAULT_LIMIT` / `GEOCLIP_MAX_FEATURES` | feature limits |
+| `GEOCLIP_STATEMENT_TIMEOUT` | per-query timeout (ms) |
+| `GEOCLIP_COORDINATE_PRECISION` / `GEOCLIP_POOL_MAX` / `GEOCLIP_MAKE_VALID_SOURCE` | output precision, pool size, `ST_MakeValid` on source geometries |
+| `PYGEOAPI_SERVER_URL` / `PYGEOAPI_LOGLEVEL` | pygeoapi's own URL and logging |
+| `GEOCLIP_PROCESS_OUTPUT_DIR` / `GEOCLIP_JOB_DB` | process manager paths (see below) |
+
+`tests/test_config.py` asserts this: it loads `pygeoapi-config.yml` through
+pygeoapi with those variables set and checks what the plugins end up with.
 
 To publish different tables, mount your own config over
 `/pygeoapi/local.config.yml` (or point `PYGEOAPI_CONFIG` elsewhere).
@@ -221,6 +239,25 @@ package into the image's virtualenv with `--no-deps` (the base image already
 carries psycopg2 and shapely), copies `pygeoapi-config.yml` to
 `/pygeoapi/local.config.yml`, and checks at build time that both plugins
 import.
+
+Published images are built and pushed to GHCR by the `publish` CI job on
+every push to `main` and every `v*` tag (and on demand from the Actions tab),
+but only after the unit tests and the container smoke test pass:
+
+```bash
+docker run --rm -p 5000:80 \
+  -e PYGEOAPI_SERVER_URL=http://localhost:5000 \
+  -e POSTGRES_HOST=db.example.org -e POSTGRES_DB=geodata \
+  -e POSTGRES_USER=reader -e POSTGRES_PASSWORD=secret \
+  -e GEOCLIP_SCHEMAS=public,geology \
+  -e GEOCLIP_ALLOWED_TABLES=public.boreholes,geology.625k_v5_bedrock_geology \
+  ghcr.io/koalageo/geo-clip-api:latest
+```
+
+Tags: `latest` (default branch), the branch name, `sha-<commit>`, and
+`1.2` / `1.2.3` for `v*` tags. GHCR packages start out private — publish
+the package from its GitHub page if the image should be pullable
+anonymously. To build it yourself instead:
 
 ```bash
 docker build -t geo-clip-api .

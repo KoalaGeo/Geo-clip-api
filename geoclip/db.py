@@ -135,6 +135,60 @@ def table_label(table: Dict[str, Any]) -> str:
     return table.get('name') or f"{table['schema']}.{table['table']}"
 
 
+def as_list(value: Any, kind: str) -> List[str]:
+    """
+    read a list setting that may have come from an environment variable
+
+    pygeoapi expands ``${VAR}`` in its configuration to a scalar, so a
+    setting such as `allowed_tables` cannot be written as a YAML list when
+    it is driven by the environment. A comma separated string is accepted
+    for exactly that case.
+
+    :param value: YAML list, comma separated string, or ``None``
+    :param kind: setting name, for error messages
+
+    :returns: `list` of `str`
+    """
+
+    if value is None or value == '':
+        return []
+
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(',') if item.strip()]
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    raise InvalidInputError(
+        f'{kind} must be a list or a comma separated string, got {value!r}')
+
+
+def as_bool(value: Any, kind: str, default: bool = False) -> bool:
+    """
+    read a boolean setting that may have come from an environment variable
+
+    :param value: `bool`, string, or ``None``
+    :param kind: setting name, for error messages
+    :param default: value to use when the setting is absent
+
+    :returns: `bool`
+    """
+
+    if value is None or value == '':
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        if value.strip().lower() in ('true', 't', 'yes', 'y', '1'):
+            return True
+        if value.strip().lower() in ('false', 'f', 'no', 'n', '0'):
+            return False
+
+    raise InvalidInputError(f'{kind} must be a boolean, got {value!r}')
+
+
 def validate_identifier(value: str, kind: str = 'identifier') -> str:
     """
     check that a single SQL identifier is safe to quote
@@ -204,7 +258,8 @@ class ClipDatabase:
         self.pool_min = int(config.get('pool_min', 1))
         self.pool_max = int(config.get('pool_max', DEFAULT_POOL_MAX))
 
-        schemas = config.get('allowed_schemas') or DEFAULT_ALLOWED_SCHEMAS
+        schemas = (as_list(config.get('allowed_schemas'), 'allowed_schemas')
+                   or DEFAULT_ALLOWED_SCHEMAS)
         self.allowed_schemas = [
             validate_identifier(s, 'schema name') for s in schemas
             if s not in FORBIDDEN_SCHEMAS
@@ -214,8 +269,10 @@ class ClipDatabase:
                 'allowed_schemas resolved to an empty list; nothing could '
                 'ever be published')
 
-        self.allowed_tables = frozenset(config.get('allowed_tables') or [])
-        self.excluded_tables = frozenset(config.get('excluded_tables') or [])
+        self.allowed_tables = frozenset(
+            as_list(config.get('allowed_tables'), 'allowed_tables'))
+        self.excluded_tables = frozenset(
+            as_list(config.get('excluded_tables'), 'excluded_tables'))
 
         self.default_limit = int(config.get('default_limit', DEFAULT_LIMIT))
         self.max_features = int(config.get('max_features',
@@ -227,7 +284,8 @@ class ClipDatabase:
         self.coordinate_precision = int(config.get(
             'coordinate_precision', DEFAULT_COORDINATE_PRECISION))
         #: run source geometries through ST_MakeValid before intersecting
-        self.make_valid_source = bool(config.get('make_valid_source', False))
+        self.make_valid_source = as_bool(config.get('make_valid_source'),
+                                         'make_valid_source')
 
     def __repr__(self):
         return f'<ClipDatabase> {self.summary}'

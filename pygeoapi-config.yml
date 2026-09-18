@@ -71,19 +71,21 @@ resources:
                 dbname: ${POSTGRES_DB:-geodata}
                 user: ${POSTGRES_USER:-postgres}
                 password: ${POSTGRES_PASSWORD:-postgres}
-                # what may be published and clipped
-                allowed_schemas:
-                    - ${GEOCLIP_SCHEMA:-public}
-                # allowed_tables: ["public.boreholes"]   # optional whitelist
-                # excluded_tables: ["public.secrets"]    # optional blacklist
+                # what may be published and clipped. these three accept a
+                # comma separated list, because an environment variable can
+                # only ever expand to a scalar
+                allowed_schemas: ${GEOCLIP_SCHEMAS:-public}
+                # empty means every table in the schemas above
+                allowed_tables: ${GEOCLIP_ALLOWED_TABLES:-}
+                excluded_tables: ${GEOCLIP_EXCLUDED_TABLES:-}
                 # guard rails
                 default_limit: ${GEOCLIP_DEFAULT_LIMIT:-1000}
                 max_features: ${GEOCLIP_MAX_FEATURES:-10000}
                 statement_timeout: ${GEOCLIP_STATEMENT_TIMEOUT:-60000}
-                coordinate_precision: 7
-                pool_max: 5
+                coordinate_precision: ${GEOCLIP_COORDINATE_PRECISION:-7}
+                pool_max: ${GEOCLIP_POOL_MAX:-5}
                 # set true if your source geometries are not OGC valid
-                make_valid_source: false
+                make_valid_source: ${GEOCLIP_MAKE_VALID_SOURCE:-false}
 
     clip:
         type: process

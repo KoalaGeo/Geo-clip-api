@@ -1,0 +1,4 @@
+-r requirements.txt
+pygeoapi>=0.16
+pytest>=7.0
+flake8>=6.0

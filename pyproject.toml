@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoclip"
+version = "0.1.0"
+description = "pygeoapi process plugins that clip PostGIS tables to a WKT geometry"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+keywords = ["pygeoapi", "ogcapi", "postgis", "clip", "geojson", "wkt"]
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "shapely>=2.0",
+]
+
+[project.optional-dependencies]
+server = ["pygeoapi>=0.16"]
+dev = [
+    "pygeoapi>=0.16",
+    "pytest>=7.0",
+    "flake8>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/KoalaGeo/Geo-clip-api"
+
+[tool.setuptools.packages.find]
+include = ["geoclip*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

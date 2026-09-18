@@ -1,0 +1,219 @@
+# =================================================================
+#
+# Geo clip API: processor tests
+#
+# =================================================================
+
+import pytest
+
+from pygeoapi.process.base import ProcessorExecuteError
+
+from geoclip.errors import DatabaseError, TableNotFoundError
+from geoclip.processes.clip import (PROCESS_METADATA, ClipProcessor, as_bool,
+                                    as_property_list)
+from geoclip.processes.list_tables import ListTablesProcessor
+
+from tests.fakes import BEDROCK_ROW, BOREHOLES_ROW
+
+POLYGON = 'POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, -3.25 56.00, ' \
+          '-3.25 55.92))'
+
+PROCESSOR_DEF = {
+    'name': 'geoclip.processes.clip.ClipProcessor',
+    'data': {'dbname': 'test', 'max_features': 50}
+}
+
+COLLECTION = {
+    'type': 'FeatureCollection',
+    'features': [],
+    'numberReturned': 0,
+    'truncated': False
+}
+
+
+class FakeDB:
+    """stands in for `geoclip.db.ClipDatabase`"""
+
+    summary = 'fake'
+    allowed_schemas = ['public']
+
+    def __init__(self, tables=None, error=None):
+        self.tables = tables if tables is not None else [BOREHOLES_ROW,
+                                                         BEDROCK_ROW]
+        self.error = error
+        self.clip_calls = []
+        self.list_calls = []
+
+    def get_table(self, name, geometry_column=None):
+        if self.error:
+            raise self.error
+        for table in self.tables:
+            if name in (table['table'], f"{table['schema']}.{table['table']}"):
+                return dict(table, name=f"{table['schema']}.{table['table']}")
+        raise TableNotFoundError(f'table {name!r} is not available')
+
+    def clip(self, table, wkt, **kwargs):
+        if self.error:
+            raise self.error
+        self.clip_calls.append(dict(table=table, wkt=wkt, **kwargs))
+        return dict(COLLECTION)
+
+    def list_tables(self, schema=None, match=None):
+        if self.error:
+            raise self.error
+        self.list_calls.append({'schema': schema, 'match': match})
+        return [dict(t, name=f"{t['schema']}.{t['table']}")
+                for t in self.tables]
+
+
+def make_clip_processor(db=None):
+    processor = ClipProcessor(dict(PROCESSOR_DEF))
+    processor.db = db or FakeDB()
+
+    return processor
+
+
+def make_list_processor(db=None):
+    processor = ListTablesProcessor({
+        'name': 'geoclip.processes.list_tables.ListTablesProcessor',
+        'data': {'dbname': 'test'}
+    })
+    processor.db = db or FakeDB()
+
+    return processor
+
+
+# ------------------------------------------------------------------- metadata
+
+def test_process_metadata_declares_required_inputs():
+    assert PROCESS_METADATA['id'] == 'clip'
+    assert PROCESS_METADATA['inputs']['wkt']['minOccurs'] == 1
+    assert PROCESS_METADATA['inputs']['table']['minOccurs'] == 1
+    assert 'featureCollection' in PROCESS_METADATA['outputs']
+
+
+# ------------------------------------------------------------------ coercions
+
+@pytest.mark.parametrize('value,expected', [
+    (None, True), (True, True), (False, False), ('true', True),
+    ('False', False), ('1', True), ('no', False)
+])
+def test_as_bool(value, expected):
+    assert as_bool(value, 'clip') is expected
+
+
+def test_as_bool_rejects_nonsense():
+    with pytest.raises(ProcessorExecuteError):
+        as_bool('maybe', 'clip')
+
+
+def test_as_property_list_accepts_csv_and_arrays():
+    assert as_property_list('id, name') == ['id', 'name']
+    assert as_property_list(['id']) == ['id']
+    assert as_property_list(None) is None
+    assert as_property_list([]) is None
+
+
+def test_as_property_list_rejects_non_strings():
+    with pytest.raises(ProcessorExecuteError):
+        as_property_list([1, 2])
+
+
+# ------------------------------------------------------------ clip processing
+
+def test_clip_returns_geojson():
+    processor = make_clip_processor()
+
+    mimetype, output = processor.execute({'table': 'boreholes',
+                                          'wkt': POLYGON})
+
+    assert mimetype == 'application/json'
+    assert output['type'] == 'FeatureCollection'
+
+
+def test_clip_passes_inputs_through():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({
+        'table': 'public.bedrock',
+        'wkt': f'SRID=27700;{POLYGON}',
+        'output_srid': 27700,
+        'limit': 25,
+        'properties': ['unit'],
+        'clip': False
+    })
+
+    call = db.clip_calls[0]
+    assert call['table']['name'] == 'public.bedrock'
+    assert call['wkt_srid'] == 27700
+    assert call['output_srid'] == 27700
+    assert call['limit'] == 25
+    assert call['properties'] == ['unit']
+    assert call['clip_geometries'] is False
+
+
+def test_clip_accepts_qualified_input_values():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({'table': {'value': 'boreholes'},
+                       'wkt': {'value': POLYGON}})
+
+    assert db.clip_calls[0]['table']['table'] == 'boreholes'
+
+
+@pytest.mark.parametrize('inputs', [
+    {'wkt': POLYGON},
+    {'table': 'boreholes'},
+    {'table': 'boreholes', 'wkt': 'POINT(0 0)'},
+    {'table': 'boreholes; DROP TABLE users', 'wkt': POLYGON},
+    {'table': 'boreholes', 'wkt': POLYGON, 'limit': 0}
+])
+def test_clip_rejects_bad_input(inputs):
+    processor = make_clip_processor()
+
+    with pytest.raises(ProcessorExecuteError):
+        processor.execute(inputs)
+
+
+def test_clip_reports_unknown_table():
+    processor = make_clip_processor()
+
+    with pytest.raises(ProcessorExecuteError, match='not available'):
+        processor.execute({'table': 'users', 'wkt': POLYGON})
+
+
+def test_clip_wraps_database_errors():
+    processor = make_clip_processor(FakeDB(error=DatabaseError('boom')))
+
+    with pytest.raises(ProcessorExecuteError, match='boom'):
+        processor.execute({'table': 'boreholes', 'wkt': POLYGON})
+
+
+# ------------------------------------------------------------- list processing
+
+def test_list_tables_returns_catalogue():
+    processor = make_list_processor()
+
+    mimetype, output = processor.execute({})
+
+    assert mimetype == 'application/json'
+    assert output['count'] == 2
+    assert output['tables'][0]['name'] == 'public.boreholes'
+    assert output['schemas'] == ['public']
+
+
+def test_list_tables_forwards_filters():
+    db = FakeDB()
+    processor = make_list_processor(db)
+
+    processor.execute({'schema': 'public', 'match': 'bore'})
+
+    assert db.list_calls[0] == {'schema': 'public', 'match': 'bore'}
+
+
+def test_list_tables_handles_no_inputs():
+    processor = make_list_processor()
+
+    assert processor.execute(None)[1]['count'] == 2

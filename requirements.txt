@@ -1,0 +1,6 @@
+# Runtime dependencies of the plugins themselves.
+# NOTE: the geopython/pygeoapi Docker image already ships psycopg2 and
+# shapely as system packages, so the Dockerfile installs geoclip with
+# --no-deps and does not need this file.
+psycopg2-binary>=2.9
+shapely>=2.0

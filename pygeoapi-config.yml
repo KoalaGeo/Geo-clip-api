@@ -1,0 +1,90 @@
+# =================================================================
+#
+# Geo clip API: pygeoapi configuration
+#
+# Every value below can be overridden with environment variables at
+# container start; see README.md and docker-compose.yml.
+#
+# =================================================================
+
+server:
+    bind:
+        host: 0.0.0.0
+        port: 80
+    url: ${PYGEOAPI_SERVER_URL:-http://localhost:5000}
+    mimetype: application/json; charset=UTF-8
+    encoding: utf-8
+    gzip: false
+    language: en-US
+    cors: true
+    pretty_print: true
+    limits:
+        default_items: 10
+        max_items: 50
+    map:
+        url: https://tile.openstreetmap.org/{z}/{x}/{y}.png
+        attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+    # local path inside the Docker image; override for a local (non-Docker) run
+    ogc_schemas_location: ${PYGEOAPI_OGC_SCHEMAS_LOCATION:-/schemas.opengis.net}
+    manager:
+        name: TinyDB
+        connection: /tmp/pygeoapi-process-manager.db
+        output_dir: /tmp/pygeoapi-process-outputs
+
+logging:
+    level: ${PYGEOAPI_LOGLEVEL:-INFO}
+
+metadata:
+    identification:
+        title: Geo clip API
+        description: Clip PostGIS data to a WKT polygon and get GeoJSON back
+        keywords:
+            - clip
+            - postgis
+            - geojson
+            - wkt
+        keywords_type: theme
+        terms_of_service: https://creativecommons.org/licenses/by/4.0/
+        url: https://github.com/KoalaGeo/Geo-clip-api
+    license:
+        name: MIT
+        url: https://opensource.org/licenses/MIT
+    provider:
+        name: KoalaGeo
+        url: https://github.com/KoalaGeo
+    contact:
+        name: KoalaGeo
+        email: you@example.org
+        role: pointOfContact
+
+resources:
+    list-tables:
+        type: process
+        processor:
+            name: geoclip.processes.list_tables.ListTablesProcessor
+            data: &geoclip_data
+                # connection (falls back to POSTGRES_*/PG* env vars)
+                host: ${POSTGRES_HOST:-postgres}
+                port: ${POSTGRES_PORT:-5432}
+                dbname: ${POSTGRES_DB:-geodata}
+                user: ${POSTGRES_USER:-postgres}
+                password: ${POSTGRES_PASSWORD:-postgres}
+                # what may be published and clipped
+                allowed_schemas:
+                    - ${GEOCLIP_SCHEMA:-public}
+                # allowed_tables: ["public.boreholes"]   # optional whitelist
+                # excluded_tables: ["public.secrets"]    # optional blacklist
+                # guard rails
+                default_limit: ${GEOCLIP_DEFAULT_LIMIT:-1000}
+                max_features: ${GEOCLIP_MAX_FEATURES:-10000}
+                statement_timeout: ${GEOCLIP_STATEMENT_TIMEOUT:-60000}
+                coordinate_precision: 7
+                pool_max: 5
+                # set true if your source geometries are not OGC valid
+                make_valid_source: false
+
+    clip:
+        type: process
+        processor:
+            name: geoclip.processes.clip.ClipProcessor
+            data: *geoclip_data

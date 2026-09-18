@@ -291,6 +291,27 @@ The files are written with OGR (through fiona, which the pygeoapi image
 ships as `python3-fiona`); a server without it still serves GeoJSON and
 refuses the other two with a clear error.
 
+**Swagger UI cannot show you these.** The `/openapi?f=html` console prints
+*Unrecognized response type; displaying content as text* and dumps the bytes,
+which look like `SQLite format 3...GPKG...`. That is the console, not the
+server: pygeoapi declares a single media type for a process response (it
+takes the first output's `contentMediaType`, defaulting to
+`application/json`), so a reply of `application/geopackage+sqlite3` is a type
+the page was never told about. The body is a valid file — save it and it
+opens in QGIS. Use `curl -o`, or in a browser:
+
+```js
+const response = await fetch(`${API}/processes/clip/execution`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({inputs: {table: TABLE, bbox: bbox, format: 'gpkg'}})
+});
+const url = URL.createObjectURL(await response.blob());
+Object.assign(document.createElement('a'),
+              {href: url, download: 'clip.gpkg'}).click();
+URL.revokeObjectURL(url);
+```
+
 Worth knowing before you wire up a download button:
 
 * the file carries the **output** CRS, so `output_srid` applies to it as

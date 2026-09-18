@@ -86,10 +86,18 @@ def make_list_processor(db=None):
 # ------------------------------------------------------------------- metadata
 
 def test_process_metadata_declares_required_inputs():
+    inputs = PROCESS_METADATA['inputs']
+
     assert PROCESS_METADATA['id'] == 'clip'
-    assert PROCESS_METADATA['inputs']['wkt']['minOccurs'] == 1
-    assert PROCESS_METADATA['inputs']['table']['minOccurs'] == 1
+    assert inputs['table']['minOccurs'] == 1
     assert 'featureCollection' in PROCESS_METADATA['outputs']
+
+    # the clip area comes from exactly one of these, so none of them can be
+    # declared required on its own
+    for name in ('wkt', 'geometry', 'bbox'):
+        assert inputs[name]['minOccurs'] == 0
+        assert 'one of wkt, geometry or bbox' in \
+            inputs[name]['description'].lower()
 
 
 # ------------------------------------------------------------------ coercions
@@ -168,7 +176,15 @@ def test_clip_accepts_qualified_input_values():
     {'table': 'boreholes'},
     {'table': 'boreholes', 'wkt': 'POINT(0 0)'},
     {'table': 'boreholes; DROP TABLE users', 'wkt': POLYGON},
-    {'table': 'boreholes', 'wkt': POLYGON, 'limit': 0}
+    {'table': 'boreholes', 'wkt': POLYGON, 'limit': 0},
+    # two clip areas at once
+    {'table': 'boreholes', 'wkt': POLYGON, 'bbox': [0, 0, 1, 1]},
+    {'table': 'boreholes', 'bbox': [1, 1, 0, 0]},
+    {'table': 'boreholes', 'bbox': [0, 0, 1]},
+    {'table': 'boreholes', 'geometry': {'type': 'Point',
+                                        'coordinates': [0, 0]}},
+    {'table': 'boreholes', 'wkt': POLYGON, 'simplify': 'sort of'},
+    {'table': 'boreholes', 'wkt': POLYGON, 'simplify': -1}
 ])
 def test_clip_rejects_bad_input(inputs):
     processor = make_clip_processor()
@@ -217,3 +233,88 @@ def test_list_tables_handles_no_inputs():
     processor = make_list_processor()
 
     assert processor.execute(None)[1]['count'] == 2
+
+
+# ------------------------------------------------------- clip area inputs
+
+GEOJSON_POLYGON = {
+    'type': 'Polygon',
+    'coordinates': [[[-3.25, 55.92], [-3.10, 55.92], [-3.10, 56.00],
+                     [-3.25, 56.00], [-3.25, 55.92]]]
+}
+
+
+def test_clip_accepts_a_geojson_geometry():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({'table': 'boreholes', 'geometry': GEOJSON_POLYGON})
+
+    assert db.clip_calls[0]['wkt'].startswith('POLYGON')
+
+
+def test_clip_accepts_a_feature_collection():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({
+        'table': 'boreholes',
+        'geometry': {
+            'type': 'FeatureCollection',
+            'features': [
+                {'type': 'Feature', 'properties': {},
+                 'geometry': GEOJSON_POLYGON},
+                {'type': 'Feature', 'properties': {}, 'geometry': {
+                    'type': 'Polygon',
+                    'coordinates': [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]
+                }}
+            ]
+        }
+    })
+
+    # two drawn polygons become one multipolygon area of interest
+    assert db.clip_calls[0]['wkt'].startswith('MULTIPOLYGON')
+
+
+def test_clip_accepts_a_bbox():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({'table': 'boreholes',
+                       'bbox': [-3.25, 55.92, -3.10, 56.00],
+                       'srid': 4326})
+
+    call = db.clip_calls[0]
+    assert call['wkt'].startswith('POLYGON')
+    assert call['wkt_srid'] == 4326
+
+
+def test_clip_accepts_a_bbox_as_a_string():
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({'table': 'boreholes',
+                       'bbox': '-3.25, 55.92, -3.10, 56.00'})
+
+    assert db.clip_calls[0]['wkt'].startswith('POLYGON')
+
+
+def test_clip_requires_a_clip_area():
+    processor = make_clip_processor()
+
+    with pytest.raises(ProcessorExecuteError, match='clip area is required'):
+        processor.execute({'table': 'boreholes'})
+
+
+@pytest.mark.parametrize('value,expected', [
+    (None, None), (False, None), ('false', None),
+    (True, True), ('true', True), (0.5, 0.5), ('0.5', 0.5)
+])
+def test_clip_passes_simplify_through(value, expected):
+    db = FakeDB()
+    processor = make_clip_processor(db)
+
+    processor.execute({'table': 'boreholes', 'wkt': POLYGON,
+                       'simplify': value})
+
+    assert db.clip_calls[0]['simplify'] == expected

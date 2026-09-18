@@ -91,7 +91,8 @@ curl -s -X POST http://localhost:5000/processes/clip/execution \
   }'
 ```
 
-The loader skips layers that are already in the database, so only the first
+Attribute tables (QGIS' `layer_styles`) and driver-internal tables are not
+loaded, and layers already in the database are skipped, so only the first
 run pays for the import. It is driven by environment variables on the
 `gpkg-loader` service:
 

@@ -39,10 +39,14 @@ target_table() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]/_/g'
 }
 
-# spatial layers only: ogrinfo prints a geometry type in brackets for those,
-# and nothing for attribute tables such as QGIS' layer_styles
+# spatial layers only. ogrinfo prints "1: <name> (<geometry type>)", using
+# the type "None" for attribute tables such as QGIS' layer_styles, and marks
+# a driver's internal tables "[private]"; neither is ours to publish
 spatial_layers() {
-    ogrinfo -q "${GPKG_PATH}" | sed -n 's/^[0-9]*: \(.*\) (.*)$/\1/p'
+    ogrinfo -q "${GPKG_PATH}" \
+        | grep -v '\[private\]' \
+        | grep -v ' (None)$' \
+        | sed -n 's/^[0-9]*: \(.*\) ([^()]*)$/\1/p'
 }
 
 layer_exists() {

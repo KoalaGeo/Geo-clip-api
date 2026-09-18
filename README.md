@@ -312,6 +312,47 @@ Object.assign(document.createElement('a'),
 URL.revokeObjectURL(url);
 ```
 
+On Windows, PowerShell mangles the quoting in the `curl` examples above, so
+either use `Invoke-WebRequest`:
+
+```powershell
+$body = @{
+  inputs = @{
+    table  = 'public.boreholes'
+    bbox   = @(-3.20, 55.94, -3.15, 55.97)
+    format = 'gpkg'
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-WebRequest -Uri 'http://localhost:5000/processes/clip/execution' `
+  -Method Post -ContentType 'application/json' -Body $body `
+  -OutFile boreholes.gpkg
+
+# it is a GeoPackage if these say "SQLite format 3" and "GPKG"
+$bytes = [System.IO.File]::ReadAllBytes("$PWD\boreholes.gpkg")
+[Text.Encoding]::ASCII.GetString($bytes[0..14])
+[Text.Encoding]::ASCII.GetString($bytes[68..71])
+```
+
+or keep the body in a file and hand it to the real `curl.exe`:
+
+```powershell
+'{"inputs":{"table":"public.boreholes","bbox":[-3.20,55.94,-3.15,55.97],"format":"gpkg"}}' `
+  | Set-Content request.json -Encoding utf8
+
+curl.exe -s -X POST http://localhost:5000/processes/clip/execution `
+  -H "Content-Type: application/json" --data-binary "@request.json" `
+  -o boreholes.gpkg
+```
+
+To look inside it without installing GDAL, use the image compose already
+pulls:
+
+```powershell
+docker run --rm -v "${PWD}:/data" ghcr.io/osgeo/gdal:alpine-small-latest `
+  ogrinfo -so /data/boreholes.gpkg boreholes
+```
+
 Worth knowing before you wire up a download button:
 
 * the file carries the **output** CRS, so `output_srid` applies to it as

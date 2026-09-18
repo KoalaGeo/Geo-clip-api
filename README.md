@@ -131,12 +131,60 @@ The clip area comes from exactly one of `wkt`, `geometry` or `bbox`.
 | `limit` | no | `default_limit` | capped by the server's `max_features` |
 | `clip` | no | `true` | `false` returns intersecting features whole instead of cutting them at the boundary |
 | `simplify` | no | `false` | `true` generalises the output with `ST_SimplifyPreserveTopology`, tolerance ≈ one pixel of the clip extent on a 2000px map; a number sets the tolerance explicitly, in output CRS units |
+| `format` | no | `geojson` | `gpkg` or `fgb` return a file instead (see below) |
 
 The clip geometry is reprojected into the table's CRS before the spatial
 predicate runs, so the table's GiST index is used; the results are then
 reprojected to `output_srid`. `numberReturned` and `truncated` are added to the
 `FeatureCollection` as foreign members — `truncated` is `true` when the limit
 was reached and there may be more data.
+
+### Download formats
+
+| `format` | Media type | Notes |
+| --- | --- | --- |
+| `geojson` (default) | `application/geo+json` | a `FeatureCollection` in the response body |
+| `gpkg` | `application/geopackage+sqlite3` | GeoPackage, one layer named after the source table; what QGIS and ArcGIS want |
+| `fgb` | `application/flatgeobuf` | FlatGeobuf: same data, far smaller, streams into OpenLayers and MapLibre |
+
+`geopackage` and `flatgeobuf` are accepted as aliases.
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "gpkg"
+    }
+  }' -o bedrock.gpkg
+```
+
+The files are written with OGR (through fiona, which the pygeoapi image
+ships as `python3-fiona`); a server without it still serves GeoJSON and
+refuses the other two with a clear error. On a 15 feature clip of the
+bedrock layer the GeoPackage is ~114 kB and the FlatGeobuf ~14 kB.
+
+Worth knowing before you wire up a download button:
+
+* the file carries the **output** CRS, so `output_srid` applies to it as
+  well; a source table with SRID 0 produces a file without a CRS;
+* pygeoapi gives a process no control over response headers, so there is no
+  `Content-Disposition` — the browser names the download after the URL
+  unless you set the name yourself (`<a download="bedrock.gpkg">`, or
+  `-o` with curl);
+* binary formats need the default raw response. Asking for
+  `"response": "document"` wraps the output in JSON, which bytes cannot go
+  into;
+* use async (`Prefer: respond-async`) for large exports and collect the file
+  from `/jobs/{id}/results`;
+* `numberReturned` and `truncated` live in the GeoJSON response, not in the
+  file, so a `limit` that was hit is invisible in a download — check the
+  feature count, or ask for GeoJSON first;
+* attribute columns come out in PostgreSQL's `jsonb` key order rather than
+  the table's column order, booleans are written as `0`/`1` (OGR via fiona
+  has no boolean field type), and FlatGeobuf reorders features into its
+  spatial index.
 
 ### From a web map
 
@@ -379,7 +427,8 @@ pygeoapi serve
 
 ```
 geoclip/db.py                     PostGIS access: catalogue + clip SQL
-geoclip/geometry.py               WKT/EWKT parsing and validation
+geoclip/formats.py                GeoPackage and FlatGeobuf writers
+geoclip/geometry.py               WKT/GeoJSON/bbox clip area parsing
 geoclip/processes/clip.py         ClipProcessor
 geoclip/processes/list_tables.py  ListTablesProcessor
 geoclip/processes/common.py       config, input unwrapping, error mapping

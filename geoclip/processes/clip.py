@@ -15,6 +15,8 @@ from pygeoapi.process.base import BaseProcessor
 
 from geoclip.db import parse_simplify
 from geoclip.errors import GeoClipError
+from geoclip.formats import (DEFAULT_FORMAT, FORMATS, media_type,
+                             parse_format, write_collection)
 from geoclip.geometry import clip_area
 from geoclip.processes.common import (ClipInputError, database_from_definition,
                                       get_input, translate_error)
@@ -172,6 +174,21 @@ PROCESS_METADATA = {
             'maxOccurs': 1,
             'keywords': ['simplify', 'generalise', 'web map']
         },
+        'format': {
+            'title': 'Output format',
+            'description': 'geojson (default) returns a FeatureCollection; '
+                           'gpkg returns a GeoPackage and fgb a FlatGeobuf, '
+                           'both as binary file downloads carrying the '
+                           'clipped features in one layer.',
+            'schema': {
+                'type': 'string',
+                'enum': sorted(FORMATS),
+                'default': DEFAULT_FORMAT
+            },
+            'minOccurs': 0,
+            'maxOccurs': 1,
+            'keywords': ['format', 'geopackage', 'flatgeobuf', 'download']
+        },
         'clip': {
             'title': 'Clip geometries',
             'description': 'True (default) cuts geometries at the boundary '
@@ -188,10 +205,20 @@ PROCESS_METADATA = {
     'outputs': {
         'featureCollection': {
             'title': 'Clipped features',
-            'description': 'GeoJSON FeatureCollection of the clipped data.',
+            'description': 'The clipped data: a GeoJSON FeatureCollection, '
+                           'or a GeoPackage or FlatGeobuf file when the '
+                           'format input asks for one.',
             'schema': {
-                'type': 'object',
-                'contentMediaType': 'application/geo+json'
+                'oneOf': [
+                    {'type': 'object',
+                     'contentMediaType': 'application/geo+json'},
+                    {'type': 'string',
+                     'contentMediaType': 'application/geopackage+sqlite3',
+                     'contentEncoding': 'binary'},
+                    {'type': 'string',
+                     'contentMediaType': 'application/flatgeobuf',
+                     'contentEncoding': 'binary'}
+                ]
             }
         }
     },
@@ -322,6 +349,7 @@ class ClipProcessor(BaseProcessor):
         wkt, srid = self._clip_area(data)
         clip_geometries = as_bool(get_input(data, 'clip'), 'clip')
         simplify = self._simplify(get_input(data, 'simplify'))
+        output_format = self._format(get_input(data, 'format'))
         properties = as_property_list(get_input(data, 'properties'))
         output_srid = as_positive_int(get_input(data, 'output_srid'),
                                       'output_srid')
@@ -345,7 +373,16 @@ class ClipProcessor(BaseProcessor):
             f'clipped {collection["numberReturned"]} features from '
             f'{table["name"]} in {elapsed:.3f}s')
 
-        return 'application/json', collection
+        if output_format == DEFAULT_FORMAT:
+            return 'application/json', collection
+
+        # the file is labelled with the CRS the geometries are actually in,
+        # which is the output CRS, not the CRS the clip area came in
+        written_srid = None
+        if table['srid']:
+            written_srid = output_srid or self.db.default_output_srid
+
+        return self._encode(collection, output_format, table, written_srid)
 
     def _clip_area(self, data):
         """
@@ -363,6 +400,44 @@ class ClipProcessor(BaseProcessor):
                              srid=get_input(data, 'srid', 4326))
         except GeoClipError as err:
             raise translate_error(err)
+
+    def _format(self, value):
+        """
+        validate the requested output format
+
+        :param value: format name
+
+        :returns: `str` format key
+        """
+
+        try:
+            return parse_format(value)
+        except GeoClipError as err:
+            raise translate_error(err)
+
+    def _encode(self, collection, output_format, table, srid):
+        """
+        write the collection as a binary format
+
+        :param collection: GeoJSON FeatureCollection
+        :param output_format: format key
+        :param table: table description, used to name the layer
+        :param srid: EPSG code of the geometries, or ``None`` when the
+                     source table has no known CRS
+
+        :returns: `tuple` of media type and file `bytes`
+        """
+
+        try:
+            data = write_collection(collection, output_format,
+                                    int(srid) if srid else None,
+                                    table.get('name'))
+        except GeoClipError as err:
+            raise translate_error(err)
+
+        LOGGER.info(f'wrote {len(data)} bytes of {output_format}')
+
+        return media_type(output_format), data
 
     def _simplify(self, value):
         """

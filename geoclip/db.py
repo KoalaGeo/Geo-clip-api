@@ -35,8 +35,13 @@ from geoclip.errors import DatabaseError, InvalidInputError, TableNotFoundError
 
 LOGGER = logging.getLogger(__name__)
 
-#: identifiers we are prepared to quote and hand to PostgreSQL
-IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_$]{0,62}$')
+#: identifiers we are prepared to quote and hand to PostgreSQL.
+#: a leading digit is allowed because real data has it (an OGR layer named
+#: "625k_V5_BEDROCK_Geology" lands as a table of the same name); such names
+#: are legal in PostgreSQL when quoted, which psycopg2.sql.Identifier always
+#: does. Safety comes from this character set plus the geometry_columns
+#: lookup, not from the first character.
+IDENTIFIER_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_$]{0,62}$')
 
 #: never exposed, whatever the configuration asks for
 FORBIDDEN_SCHEMAS = frozenset([

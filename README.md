@@ -20,8 +20,11 @@ document. Both share one code base and one database configuration.
 ## Quick start
 
 ```bash
-docker compose up --build        # PostGIS with demo data + the API on :5000
+docker compose up --build        # PostGIS + GeoPackage load + the API on :5000
 ```
+
+Three stages: PostGIS with the small demo tables, a GDAL stage that pushes
+`tests/*.gpkg` into it with `ogr2ogr`, then the API once the load finishes.
 
 ```bash
 # what can I clip?
@@ -55,6 +58,58 @@ The response is a GeoJSON `FeatureCollection`:
 
 Process metadata lives at `/processes/clip` and `/processes/list-tables`, and
 the whole API is described at `/openapi`.
+
+## Test data
+
+Two sets of data land in PostGIS:
+
+* `docker/initdb/01-demo-data.sql` — two tiny tables (`boreholes`, `bedrock`)
+  created when the database is first initialised;
+* `tests/625k_V5_Geology_UK_EPSG27700.gpkg` — the 1:625k UK geology
+  GeoPackage, loaded by the `gpkg-loader` compose stage
+  (`ghcr.io/osgeo/gdal:alpine-small-latest`, which carries both the GPKG and
+  PostgreSQL drivers).
+
+Each spatial layer becomes a table under its laundered name, so after the
+first `docker compose up` the clip process can be pointed at:
+
+| Table | Geometry | SRID | Features |
+| --- | --- | --- | --- |
+| `public.625k_v5_bedrock_geology` | MULTIPOLYGON | 27700 | 11244 |
+| `public.625k_v5_superficial_geology` | MULTIPOLYGON | 27700 | 10651 |
+| `public.625k_v5_dykes_geology` | MULTIPOLYGON | 27700 | 3263 |
+| `public.625k_v5_faults` | MULTILINESTRING | 27700 | 2741 |
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "wkt": "POLYGON((-3.30 55.90, -3.05 55.90, -3.05 56.02, -3.30 56.02, -3.30 55.90))",
+      "properties": ["lex_d", "rcs_d", "max_period"]
+    }
+  }'
+```
+
+The loader skips layers that are already in the database, so only the first
+run pays for the import. It is driven by environment variables on the
+`gpkg-loader` service:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GPKG_PATH` | `/data/625k_V5_Geology_UK_EPSG27700.gpkg` | GeoPackage to load (`./tests` is mounted at `/data`) |
+| `GPKG_LAYERS` | every spatial layer | space separated subset to load |
+| `GPKG_SCHEMA` | `public` | target schema |
+| `GPKG_SRS` | `EPSG:27700` (set in compose) | CRS assigned on load with `-a_srs`, no reprojection |
+| `GPKG_FORCE` | `false` | `true` reloads layers that already exist |
+| `GDAL_IMAGE` | `ghcr.io/osgeo/gdal:alpine-small-latest` | image used for the load |
+
+`GPKG_SRS` matters for this file: three of its four layers reference a
+private SRS id (`100000`) rather than an EPSG code, and without the override
+they would land in PostGIS with an unknown SRID — which stops the clip
+process reprojecting them. To load your own data instead, drop the file in
+`tests/` and set `GPKG_PATH` (and `GPKG_SRS`, if its CRS is not declared
+with an EPSG code).
 
 ## Inputs
 
@@ -216,6 +271,7 @@ geoclip/processes/common.py       config, input unwrapping, error mapping
 pygeoapi-config.yml               pygeoapi configuration wiring both plugins
 docker/entrypoint.sh              creates the process manager paths, then
                                   hands over to the pygeoapi entrypoint
+docker/load-geopackage.sh         ogr2ogr load of a GeoPackage into PostGIS
 docker/initdb/                    demo data for docker compose
 ```
 

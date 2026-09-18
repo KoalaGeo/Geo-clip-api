@@ -20,7 +20,11 @@ def db():
 
 # ---------------------------------------------------------------- identifiers
 
-@pytest.mark.parametrize('value', ['roads', 'os_open_roads', '_x', 'a1$b'])
+@pytest.mark.parametrize('value', [
+    'roads', 'os_open_roads', '_x', 'a1$b',
+    # OGR layer names routinely start with a digit
+    '625k_v5_bedrock_geology'
+])
 def test_valid_identifiers(value):
     assert validate_identifier(value) == value
 
@@ -28,8 +32,8 @@ def test_valid_identifiers(value):
 @pytest.mark.parametrize('value', [
     'roads; DROP TABLE users',
     'roads"',
-    '1roads',
     'roads-2',
+    '625k geology',
     'public.roads',
     '',
     None,

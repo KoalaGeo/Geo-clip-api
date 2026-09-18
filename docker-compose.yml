@@ -21,11 +21,39 @@ services:
       timeout: 5s
       retries: 10
 
+  # loads tests/*.gpkg into PostGIS with ogr2ogr, so the processes have real
+  # data to clip. Layers already present are skipped, so later runs are quick
+  gpkg-loader:
+    image: ${GDAL_IMAGE:-ghcr.io/osgeo/gdal:alpine-small-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: geodata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      GPKG_PATH: /data/625k_V5_Geology_UK_EPSG27700.gpkg
+      GPKG_SCHEMA: public
+      # three layers store a private SRS id that GDAL cannot map to EPSG, so
+      # the CRS is assigned on load (no reprojection: the data is BNG)
+      GPKG_SRS: EPSG:27700
+      # set true to reload layers that are already in the database
+      GPKG_FORCE: "false"
+    volumes:
+      - ./tests:/data:ro
+      - ./docker/load-geopackage.sh:/load-geopackage.sh:ro
+    entrypoint: ["/bin/sh", "/load-geopackage.sh"]
+    restart: "no"
+
   api:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
+      gpkg-loader:
+        condition: service_completed_successfully
     environment:
       PYGEOAPI_SERVER_URL: http://localhost:5000
       PYGEOAPI_LOGLEVEL: INFO

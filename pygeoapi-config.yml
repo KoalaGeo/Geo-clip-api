@@ -83,6 +83,9 @@ resources:
                 max_features: ${GEOCLIP_MAX_FEATURES:-10000}
                 statement_timeout: ${GEOCLIP_STATEMENT_TIMEOUT:-60000}
                 coordinate_precision: ${GEOCLIP_COORDINATE_PRECISION:-7}
+                # simplify: true uses the clip extent divided by this as the
+                # tolerance, i.e. about a pixel on a 2000 pixel wide map
+                simplify_divisor: ${GEOCLIP_SIMPLIFY_DIVISOR:-2000}
                 pool_max: ${GEOCLIP_POOL_MAX:-5}
                 # set true if your source geometries are not OGC valid
                 make_valid_source: ${GEOCLIP_MAKE_VALID_SOURCE:-false}

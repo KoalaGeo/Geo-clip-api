@@ -116,9 +116,13 @@ with an EPSG code).
 
 ### `clip`
 
+The clip area comes from exactly one of `wkt`, `geometry` or `bbox`.
+
 | Input | Required | Default | Notes |
 | --- | --- | --- | --- |
-| `wkt` | yes | | `POLYGON` or `MULTIPOLYGON`. EWKT (`SRID=27700;POLYGON((...))`) is accepted and overrides `srid`. Self-intersecting rings are repaired with `ST_MakeValid`. |
+| `wkt` | one of three | | `POLYGON` or `MULTIPOLYGON`. EWKT (`SRID=27700;POLYGON((...))`) is accepted and overrides `srid`. Self-intersecting rings are repaired with `ST_MakeValid`. |
+| `geometry` | one of three | | GeoJSON Polygon/MultiPolygon, Feature, or FeatureCollection (features are merged into one area) — what a Leaflet, OpenLayers or MapLibre drawing control gives you |
+| `bbox` | one of three | | `[minx, miny, maxx, maxy]` in the `srid` CRS, for clipping to a map viewport |
 | `table` | yes | | `table` or `schema.table`, as returned by `list-tables` |
 | `geometry_column` | no | | only needed for tables with more than one geometry column |
 | `srid` | no | `4326` | EPSG code of the clip geometry |
@@ -126,12 +130,62 @@ with an EPSG code).
 | `properties` | no | all columns | array (or comma separated string) of columns to return |
 | `limit` | no | `default_limit` | capped by the server's `max_features` |
 | `clip` | no | `true` | `false` returns intersecting features whole instead of cutting them at the boundary |
+| `simplify` | no | `false` | `true` generalises the output with `ST_SimplifyPreserveTopology`, tolerance ≈ one pixel of the clip extent on a 2000px map; a number sets the tolerance explicitly, in output CRS units |
 
 The clip geometry is reprojected into the table's CRS before the spatial
 predicate runs, so the table's GiST index is used; the results are then
 reprojected to `output_srid`. `numberReturned` and `truncated` are added to the
 `FeatureCollection` as foreign members — `truncated` is `true` when the limit
 was reached and there may be more data.
+
+### From a web map
+
+`bbox` and `geometry` exist so a browser never has to build WKT. CORS is on,
+and the sync response is a GeoJSON `FeatureCollection` you can hand straight
+to a layer.
+
+```js
+// Leaflet: clip to the current view
+const b = map.getBounds();
+const response = await fetch(`${API}/processes/clip/execution`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({inputs: {
+    table: 'public.625k_v5_bedrock_geology',
+    bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
+    simplify: true
+  }})
+});
+L.geoJSON(await response.json()).addTo(map);
+```
+
+```js
+// MapLibre + mapbox-gl-draw: clip to whatever the user drew
+body: JSON.stringify({inputs: {
+  table: 'public.625k_v5_bedrock_geology',
+  geometry: draw.getAll(),        // a FeatureCollection; parts are merged
+  simplify: true
+}})
+```
+
+```js
+// OpenLayers: a drawn geometry, reprojected to WGS84 first
+const geojson = new GeoJSON().writeGeometryObject(feature.getGeometry(), {
+  dataProjection: 'EPSG:4326',
+  featureProjection: map.getView().getProjection()
+});
+body: JSON.stringify({inputs: {table: TABLE, geometry: geojson}})
+```
+
+Send `srid` if your coordinates are not WGS84 (an OpenLayers geometry left in
+the map's own projection is usually `3857`), and remember the response
+carries `numberReturned` and `truncated` — show the user something when the
+limit was hit rather than silently plotting a partial layer.
+
+`simplify: true` is worth having on for display: the tolerance is derived
+from the size of the area asked for, so a viewport-sized clip is generalised
+to roughly a pixel while a field-sized one is left alone. Leave it off when
+the response is going into an analysis or a download.
 
 ### `list-tables`
 
@@ -178,6 +232,7 @@ variable can never produce a YAML list.
 | `max_features` | `10000` | hard ceiling on `limit` |
 | `statement_timeout` | `60000` | per-query timeout in ms |
 | `coordinate_precision` | `7` | decimal places in the output GeoJSON |
+| `simplify_divisor` | `2000` | `simplify: true` uses the clip extent divided by this as the tolerance |
 | `pool_min` / `pool_max` | `1` / `5` | connection pool size |
 | `make_valid_source` | `false` | set `true` if the source geometries are not OGC valid |
 
@@ -194,6 +249,7 @@ so the published image is configured without editing YAML inside it:
 | `GEOCLIP_DEFAULT_LIMIT` / `GEOCLIP_MAX_FEATURES` | feature limits |
 | `GEOCLIP_STATEMENT_TIMEOUT` | per-query timeout (ms) |
 | `GEOCLIP_COORDINATE_PRECISION` / `GEOCLIP_POOL_MAX` / `GEOCLIP_MAKE_VALID_SOURCE` | output precision, pool size, `ST_MakeValid` on source geometries |
+| `GEOCLIP_SIMPLIFY_DIVISOR` | tolerance divisor used by `simplify: true` |
 | `PYGEOAPI_SERVER_URL` / `PYGEOAPI_LOGLEVEL` | pygeoapi's own URL and logging |
 | `GEOCLIP_PROCESS_OUTPUT_DIR` / `GEOCLIP_JOB_DB` | process manager paths (see below) |
 

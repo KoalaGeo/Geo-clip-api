@@ -56,6 +56,9 @@ DEFAULT_OUTPUT_SRID = 4326
 DEFAULT_STATEMENT_TIMEOUT = 60000  # ms
 DEFAULT_POOL_MAX = 5
 DEFAULT_COORDINATE_PRECISION = 7
+#: automatic simplification uses the clip extent divided by this, i.e. about
+#: one pixel on a 2000 pixel wide map
+DEFAULT_SIMPLIFY_DIVISOR = 2000
 
 LIST_TABLES_SQL = """
 SELECT g.f_table_schema AS schema,
@@ -189,6 +192,44 @@ def as_bool(value: Any, kind: str, default: bool = False) -> bool:
     raise InvalidInputError(f'{kind} must be a boolean, got {value!r}')
 
 
+def parse_simplify(simplify: Any) -> Any:
+    """
+    validate the simplify input
+
+    :param simplify: ``True``/``False``/``None``, or a tolerance in
+                     output CRS units
+
+    :returns: ``True``, ``None``, or a `float` tolerance
+    """
+
+    if simplify in (None, False, ''):
+        return None
+
+    if simplify is True:
+        return True
+
+    if isinstance(simplify, str):
+        lowered = simplify.strip().lower()
+        if lowered in ('true', 't', 'yes', 'y'):
+            return True
+        if lowered in ('false', 'f', 'no', 'n'):
+            return None
+
+    try:
+        tolerance = float(simplify)
+    except (TypeError, ValueError):
+        raise InvalidInputError(
+            'simplify must be true, false, or a tolerance in output CRS '
+            f'units, got {simplify!r}')
+
+    if tolerance <= 0:
+        raise InvalidInputError(
+            f'simplify tolerance must be greater than zero, got '
+            f'{tolerance}')
+
+    return tolerance
+
+
 def validate_identifier(value: str, kind: str = 'identifier') -> str:
     """
     check that a single SQL identifier is safe to quote
@@ -283,6 +324,8 @@ class ClipDatabase:
                                                 DEFAULT_STATEMENT_TIMEOUT))
         self.coordinate_precision = int(config.get(
             'coordinate_precision', DEFAULT_COORDINATE_PRECISION))
+        self.simplify_divisor = float(config.get('simplify_divisor')
+                                      or DEFAULT_SIMPLIFY_DIVISOR)
         #: run source geometries through ST_MakeValid before intersecting
         self.make_valid_source = as_bool(config.get('make_valid_source'),
                                          'make_valid_source')
@@ -554,7 +597,8 @@ class ClipDatabase:
 
     def _build_clip_query(self, table: Dict[str, Any],
                           properties: Optional[Iterable[str]] = None,
-                          clip_geometries: bool = True):
+                          clip_geometries: bool = True,
+                          simplify: Any = None):
         """
         compose the clipping statement for a table
 
@@ -563,6 +607,10 @@ class ClipDatabase:
         :param clip_geometries: whether geometries are cut at the boundary
                                 of the clip geometry (`True`) or returned
                                 whole (`False`)
+        :param simplify: ``True`` to simplify output geometries with a
+                         tolerance derived from the clip extent, a number
+                         for an explicit tolerance in output CRS units, or
+                         ``None``/``False`` for no simplification
 
         :returns: `psycopg2.sql.Composable`
         """
@@ -595,13 +643,37 @@ class ClipDatabase:
 
         if table_srid:
             output_geom = sql.SQL('ST_Transform(geom, %(output_srid)s)')
+            clip_in_output_srid = sql.SQL(
+                'ST_Transform(clip.geom, %(output_srid)s)')
         else:
             output_geom = sql.SQL('geom')
+            clip_in_output_srid = sql.SQL('clip.geom')
+
+        simplify_cte = sql.SQL('')
+
+        if simplify is True:
+            # one tolerance for the whole response, scaled to the area
+            # asked for: a viewport sized clip is simplified to about a
+            # pixel, a field sized one barely at all
+            simplify_cte = sql.SQL("""
+), tolerance AS (
+    SELECT GREATEST(ST_XMax(g) - ST_XMin(g), ST_YMax(g) - ST_YMin(g))
+           / %(simplify_divisor)s AS value
+    FROM (SELECT {clip_in_output_srid} AS g FROM clip) extent""").format(
+                clip_in_output_srid=clip_in_output_srid)
+            output_geom = sql.SQL(
+                'ST_SimplifyPreserveTopology({}, (SELECT value FROM '
+                'tolerance))').format(output_geom)
+        elif simplify is not None and simplify is not False:
+            output_geom = sql.SQL(
+                'ST_SimplifyPreserveTopology({}, %(simplify_tolerance)s)'
+            ).format(output_geom)
 
         return sql.SQL("""
 WITH clip AS (
     SELECT ST_MakeValid(
                ST_SetSRID(ST_GeomFromText(%(wkt)s), %(wkt_srid)s)) AS geom
+{simplify_cte}
 ), target AS (
     SELECT {clip_in_table_srid} AS geom FROM clip
 ), matched AS (
@@ -626,6 +698,7 @@ SELECT jsonb_build_object(
 FROM kept
 """).format(
             clip_in_table_srid=clip_in_table_srid,
+            simplify_cte=simplify_cte,
             properties=self._properties_expression(table, properties),
             geom_expr=geom_expr,
             relation=relation,
@@ -635,7 +708,8 @@ FROM kept
     def clip(self, table: Dict[str, Any], wkt: str, wkt_srid: int = 4326,
              output_srid: Optional[int] = None, limit: Optional[int] = None,
              properties: Optional[Iterable[str]] = None,
-             clip_geometries: bool = True) -> Dict[str, Any]:
+             clip_geometries: bool = True,
+             simplify: Any = None) -> Dict[str, Any]:
         """
         clip a table to a WKT geometry
 
@@ -646,20 +720,27 @@ FROM kept
         :param limit: maximum number of features to return
         :param properties: optional subset of columns to return
         :param clip_geometries: cut geometries at the clip boundary
+        :param simplify: ``True`` to simplify output geometries to about a
+                         pixel of the clip extent, or a tolerance in output
+                         CRS units
 
         :returns: `dict` GeoJSON FeatureCollection
         """
 
         limit = self.clamp_limit(limit)
         output_srid = int(output_srid or self.default_output_srid)
-        query = self._build_clip_query(table, properties, clip_geometries)
+        simplify = parse_simplify(simplify)
+        query = self._build_clip_query(table, properties, clip_geometries,
+                                       simplify)
 
         parameters = {
             'wkt': wkt,
             'wkt_srid': int(wkt_srid),
             'output_srid': output_srid,
             'limit': limit,
-            'precision': self.coordinate_precision
+            'precision': self.coordinate_precision,
+            'simplify_divisor': self.simplify_divisor,
+            'simplify_tolerance': simplify if simplify is not True else None
         }
 
         with self._cursor() as cur:

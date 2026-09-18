@@ -184,3 +184,45 @@ def test_geopackage_layer_keeps_its_attributes(db, geopackage_table):
                          properties=['lex_d'])
 
     assert list(collection['features'][0]['properties']) == ['lex_d']
+
+
+def test_bbox_and_wkt_agree(db):
+    table = db.get_table('boreholes')
+
+    from geoclip.geometry import parse_bbox
+
+    wkt, _ = parse_bbox([-3.25, 55.92, -3.10, 56.00])
+
+    assert db.clip(table, wkt)['numberReturned'] == \
+        db.clip(table, EDINBURGH)['numberReturned']
+
+
+def test_simplify_reduces_vertices(db, geopackage_table):
+    def vertices(collection):
+        return sum(1 for feature in collection['features']
+                   for _ in coordinates(feature['geometry']))
+
+    plain = db.clip(geopackage_table, EDINBURGH)
+    automatic = db.clip(geopackage_table, EDINBURGH, simplify=True)
+    coarse = db.clip(geopackage_table, EDINBURGH, simplify=0.002)
+
+    assert plain['numberReturned'] == automatic['numberReturned']
+    assert vertices(automatic) < vertices(plain)
+    assert vertices(coarse) < vertices(automatic)
+
+
+def test_simplify_works_in_the_output_crs(db, geopackage_table):
+    # tolerance is in output CRS units, so this must not blow up or empty
+    # the response when the output is metres rather than degrees
+    collection = db.clip(geopackage_table, EDINBURGH, output_srid=27700,
+                         simplify=True)
+
+    assert collection['numberReturned'] > 0
+
+
+def test_simplify_keeps_geometries_valid(db, geopackage_table):
+    collection = db.clip(geopackage_table, EDINBURGH, simplify=True)
+
+    for feature in collection['features']:
+        assert feature['geometry']['type'] in ('Polygon', 'MultiPolygon')
+        assert feature['geometry']['coordinates']

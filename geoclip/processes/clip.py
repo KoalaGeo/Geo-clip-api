@@ -13,8 +13,9 @@ import time
 
 from pygeoapi.process.base import BaseProcessor
 
+from geoclip.db import parse_simplify
 from geoclip.errors import GeoClipError
-from geoclip.geometry import parse_clip_geometry
+from geoclip.geometry import clip_area
 from geoclip.processes.common import (ClipInputError, database_from_definition,
                                       get_input, translate_error)
 
@@ -50,13 +51,45 @@ PROCESS_METADATA = {
             'title': 'Clip geometry (WKT)',
             'description': 'POLYGON or MULTIPOLYGON in WKT. An EWKT prefix '
                            '("SRID=27700;POLYGON((...))") sets the CRS and '
-                           'overrides the srid input.',
+                           'overrides the srid input. One of wkt, geometry '
+                           'or bbox is required.',
             'schema': {
                 'type': 'string'
             },
-            'minOccurs': 1,
+            'minOccurs': 0,
             'maxOccurs': 1,
             'keywords': ['wkt', 'polygon', 'area of interest']
+        },
+        'geometry': {
+            'title': 'Clip geometry (GeoJSON)',
+            'description': 'A GeoJSON Polygon or MultiPolygon, or a Feature '
+                           'or FeatureCollection carrying them - what a '
+                           'Leaflet, OpenLayers or MapLibre drawing control '
+                           'produces. Several features are merged into one '
+                           'area. One of wkt, geometry or bbox is required.',
+            'schema': {
+                'type': 'object',
+                'contentMediaType': 'application/geo+json'
+            },
+            'minOccurs': 0,
+            'maxOccurs': 1,
+            'keywords': ['geojson', 'polygon', 'area of interest']
+        },
+        'bbox': {
+            'title': 'Clip bounding box',
+            'description': 'Area of interest as [minx, miny, maxx, maxy] in '
+                           'the CRS given by srid, for clipping to a map '
+                           'viewport. One of wkt, geometry or bbox is '
+                           'required.',
+            'schema': {
+                'type': 'array',
+                'items': {'type': 'number'},
+                'minItems': 4,
+                'maxItems': 4
+            },
+            'minOccurs': 0,
+            'maxOccurs': 1,
+            'keywords': ['bbox', 'extent', 'viewport']
         },
         'table': {
             'title': 'Table',
@@ -122,6 +155,23 @@ PROCESS_METADATA = {
             'minOccurs': 0,
             'maxOccurs': 1
         },
+        'simplify': {
+            'title': 'Simplify output geometries',
+            'description': 'true simplifies the returned geometries with '
+                           'ST_SimplifyPreserveTopology, using a tolerance '
+                           'of about one pixel of the clip extent on a 2000 '
+                           'pixel wide map. A number sets the tolerance '
+                           'explicitly, in output CRS units.',
+            'schema': {
+                'oneOf': [
+                    {'type': 'boolean', 'default': False},
+                    {'type': 'number', 'exclusiveMinimum': 0}
+                ]
+            },
+            'minOccurs': 0,
+            'maxOccurs': 1,
+            'keywords': ['simplify', 'generalise', 'web map']
+        },
         'clip': {
             'title': 'Clip geometries',
             'description': 'True (default) cuts geometries at the boundary '
@@ -148,8 +198,9 @@ PROCESS_METADATA = {
     'example': {
         'inputs': {
             'table': 'public.boreholes',
-            'wkt': EXAMPLE_WKT,
+            'bbox': [-3.20, 55.94, -3.15, 55.97],
             'srid': 4326,
+            'simplify': True,
             'limit': 1000
         }
     }
@@ -263,19 +314,14 @@ class ClipProcessor(BaseProcessor):
         """
 
         table_name = get_input(data, 'table')
-        wkt_input = get_input(data, 'wkt')
 
         if not table_name:
             raise ClipInputError('table is a required input',
                                  user_msg='table is a required input')
 
-        if not wkt_input:
-            raise ClipInputError('wkt is a required input',
-                                 user_msg='wkt is a required input')
-
-        wkt, srid = self._parse_geometry(wkt_input, get_input(data, 'srid',
-                                                              4326))
+        wkt, srid = self._clip_area(data)
         clip_geometries = as_bool(get_input(data, 'clip'), 'clip')
+        simplify = self._simplify(get_input(data, 'simplify'))
         properties = as_property_list(get_input(data, 'properties'))
         output_srid = as_positive_int(get_input(data, 'output_srid'),
                                       'output_srid')
@@ -290,7 +336,7 @@ class ClipProcessor(BaseProcessor):
             collection = self.db.clip(
                 table, wkt, wkt_srid=srid, output_srid=output_srid,
                 limit=limit, properties=properties,
-                clip_geometries=clip_geometries)
+                clip_geometries=clip_geometries, simplify=simplify)
         except GeoClipError as err:
             raise translate_error(err)
 
@@ -301,18 +347,34 @@ class ClipProcessor(BaseProcessor):
 
         return 'application/json', collection
 
-    def _parse_geometry(self, wkt_input, srid):
+    def _clip_area(self, data):
         """
-        validate the clip geometry, translating errors for pygeoapi
+        resolve the clip area from the wkt, geometry and bbox inputs
 
-        :param wkt_input: WKT or EWKT string
-        :param srid: SRID to assume when no EWKT prefix is present
+        :param data: `dict` of process inputs
 
         :returns: `tuple` of (wkt, srid)
         """
 
         try:
-            return parse_clip_geometry(wkt_input, srid)
+            return clip_area(wkt=get_input(data, 'wkt'),
+                             geometry=get_input(data, 'geometry'),
+                             bbox=get_input(data, 'bbox'),
+                             srid=get_input(data, 'srid', 4326))
+        except GeoClipError as err:
+            raise translate_error(err)
+
+    def _simplify(self, value):
+        """
+        validate the simplify input before touching the database
+
+        :param value: ``True``/``False``, or a tolerance
+
+        :returns: ``True``, ``None``, or a `float` tolerance
+        """
+
+        try:
+            return parse_simplify(value)
         except GeoClipError as err:
             raise translate_error(err)
 

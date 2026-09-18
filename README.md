@@ -129,6 +129,24 @@ Environment variables used by the shipped config: `POSTGRES_HOST`,
 To publish different tables, mount your own config over
 `/pygeoapi/local.config.yml` (or point `PYGEOAPI_CONFIG` elsewhere).
 
+### Process manager paths
+
+pygeoapi's process manager writes every job's output to a file under its
+`output_dir` and does **not** create that directory, so a server started
+without it fails each execution with:
+
+```
+Error executing process: [Errno 2] No such file or directory:
+  '/tmp/pygeoapi-process-outputs/clip-<job id>'
+```
+
+In Docker, `docker/entrypoint.sh` creates the manager's paths before
+pygeoapi starts — it reads them from the running configuration, so a mounted
+config with different paths is handled too. The shipped defaults are
+`GEOCLIP_PROCESS_OUTPUT_DIR=/tmp/pygeoapi-process-outputs` and
+`GEOCLIP_JOB_DB=/tmp/pygeoapi-process-manager.db`. Outside Docker, create
+them yourself (see below).
+
 ## Safety
 
 * table, schema, geometry column and property names are checked against
@@ -182,6 +200,7 @@ To run the server outside Docker, point `PYGEOAPI_OGC_SCHEMAS_LOCATION` at
 export PYGEOAPI_CONFIG=pygeoapi-config.yml PYGEOAPI_OPENAPI=/tmp/openapi.yml
 export PYGEOAPI_OGC_SCHEMAS_LOCATION=http://schemas.opengis.net
 export POSTGRES_HOST=localhost POSTGRES_DB=geodata
+mkdir -p /tmp/pygeoapi-process-outputs   # the process manager needs this
 pygeoapi openapi generate $PYGEOAPI_CONFIG --output-file $PYGEOAPI_OPENAPI
 pygeoapi serve
 ```
@@ -195,6 +214,8 @@ geoclip/processes/clip.py         ClipProcessor
 geoclip/processes/list_tables.py  ListTablesProcessor
 geoclip/processes/common.py       config, input unwrapping, error mapping
 pygeoapi-config.yml               pygeoapi configuration wiring both plugins
+docker/entrypoint.sh              creates the process manager paths, then
+                                  hands over to the pygeoapi entrypoint
 docker/initdb/                    demo data for docker compose
 ```
 

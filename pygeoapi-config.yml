@@ -28,8 +28,10 @@ server:
     ogc_schemas_location: ${PYGEOAPI_OGC_SCHEMAS_LOCATION:-/schemas.opengis.net}
     manager:
         name: TinyDB
-        connection: /tmp/pygeoapi-process-manager.db
-        output_dir: /tmp/pygeoapi-process-outputs
+        # both paths are created by docker/entrypoint.sh at container start;
+        # outside Docker, create them yourself before serving
+        connection: ${GEOCLIP_JOB_DB:-/tmp/pygeoapi-process-manager.db}
+        output_dir: ${GEOCLIP_PROCESS_OUTPUT_DIR:-/tmp/pygeoapi-process-outputs}
 
 logging:
     level: ${PYGEOAPI_LOGLEVEL:-INFO}

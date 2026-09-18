@@ -52,7 +52,72 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: geodata
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d geodata"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Build image
         run: docker build -t geo-clip-api .
+
+      - name: Load demo data
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d geodata -f docker/initdb/01-demo-data.sql
+
+      - name: Start the API
+        run: |
+          docker run -d --name geo-clip-api --network host \
+            -e PYGEOAPI_SERVER_URL=http://localhost:80 \
+            -e POSTGRES_HOST=127.0.0.1 \
+            -e POSTGRES_DB=geodata \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            geo-clip-api
+
+      - name: Wait for the API
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf "http://localhost:80/processes?f=json" > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'API did not come up'
+          exit 1
+
+      # executes both processes for real: this is what catches a container
+      # that serves happily but cannot write its job output
+      - name: Execute list-tables
+        run: |
+          curl -sf -X POST http://localhost:80/processes/list-tables/execution \
+            -H 'Content-Type: application/json' -d '{"inputs":{}}' -o tables.json
+          cat tables.json
+          jq -e '.count >= 2' tables.json
+
+      - name: Execute clip
+        run: |
+          curl -sf -X POST http://localhost:80/processes/clip/execution \
+            -H 'Content-Type: application/json' \
+            -d '{"inputs":{"table":"public.boreholes","wkt":"POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, -3.25 56.00, -3.25 55.92))"}}' \
+            -o clipped.json
+          cat clipped.json
+          jq -e '.type == "FeatureCollection" and (.features | length) == 2' clipped.json
+
+      - name: Container logs
+        if: always()
+        run: docker logs geo-clip-api

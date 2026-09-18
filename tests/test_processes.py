@@ -36,6 +36,7 @@ class FakeDB:
 
     summary = 'fake'
     allowed_schemas = ['public']
+    default_output_srid = 4326
 
     def __init__(self, tables=None, error=None):
         self.tables = tables if tables is not None else [BOREHOLES_ROW,
@@ -318,3 +319,72 @@ def test_clip_passes_simplify_through(value, expected):
                        'simplify': value})
 
     assert db.clip_calls[0]['simplify'] == expected
+
+
+# --------------------------------------------------------------- formats
+
+def test_clip_returns_geojson_by_default():
+    processor = make_clip_processor()
+
+    mimetype, output = processor.execute({'table': 'boreholes',
+                                          'wkt': POLYGON})
+
+    assert mimetype == 'application/json'
+    assert isinstance(output, dict)
+
+
+@pytest.mark.parametrize('fmt,expected_type', [
+    ('gpkg', 'application/geopackage+sqlite3'),
+    ('geopackage', 'application/geopackage+sqlite3'),
+    ('fgb', 'application/flatgeobuf'),
+    ('flatgeobuf', 'application/flatgeobuf')
+])
+def test_clip_returns_binary_formats(fmt, expected_type):
+    pytest.importorskip('fiona')
+    processor = make_clip_processor()
+
+    mimetype, output = processor.execute({'table': 'boreholes',
+                                          'wkt': POLYGON, 'format': fmt})
+
+    assert mimetype == expected_type
+    assert isinstance(output, bytes)
+    assert output
+
+
+def test_clip_rejects_an_unknown_format():
+    processor = make_clip_processor()
+
+    with pytest.raises(ProcessorExecuteError, match='unsupported format'):
+        processor.execute({'table': 'boreholes', 'wkt': POLYGON,
+                           'format': 'shp'})
+
+
+def test_binary_output_is_labelled_with_the_output_crs(tmp_path):
+    fiona = pytest.importorskip('fiona')
+    processor = make_clip_processor()
+
+    _, output = processor.execute({'table': 'boreholes', 'wkt': POLYGON,
+                                   'format': 'gpkg', 'output_srid': 27700})
+
+    path = tmp_path / 'out.gpkg'
+    path.write_bytes(output)
+
+    with fiona.open(path) as source:
+        # the CRS of the file is where the geometries ended up, not where
+        # the clip area came from
+        assert str(source.crs) == 'EPSG:27700'
+
+
+def test_binary_output_defaults_to_the_servers_output_crs(tmp_path):
+    fiona = pytest.importorskip('fiona')
+    processor = make_clip_processor()
+
+    _, output = processor.execute({'table': 'boreholes',
+                                   'wkt': f'SRID=27700;{POLYGON}',
+                                   'format': 'gpkg'})
+
+    path = tmp_path / 'out.gpkg'
+    path.write_bytes(output)
+
+    with fiona.open(path) as source:
+        assert str(source.crs) == 'EPSG:4326'

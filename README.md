@@ -131,12 +131,248 @@ The clip area comes from exactly one of `wkt`, `geometry` or `bbox`.
 | `limit` | no | `default_limit` | capped by the server's `max_features` |
 | `clip` | no | `true` | `false` returns intersecting features whole instead of cutting them at the boundary |
 | `simplify` | no | `false` | `true` generalises the output with `ST_SimplifyPreserveTopology`, tolerance ≈ one pixel of the clip extent on a 2000px map; a number sets the tolerance explicitly, in output CRS units |
+| `format` | no | `geojson` | `gpkg` or `fgb` return a file instead (see below) |
 
 The clip geometry is reprojected into the table's CRS before the spatial
 predicate runs, so the table's GiST index is used; the results are then
 reprojected to `output_srid`. `numberReturned` and `truncated` are added to the
 `FeatureCollection` as foreign members — `truncated` is `true` when the limit
 was reached and there may be more data.
+
+### Clip area examples
+
+Every example below runs against the `docker compose` stack as it comes up,
+and the feature counts are what it returns.
+
+**WKT** — for humans, QGIS and the command line:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "wkt": "POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, -3.25 56.00, -3.25 55.92))"
+    }
+  }'                                                        # 2 features
+```
+
+**EWKT** — the `SRID=` prefix sets the CRS of the clip area, so you can cut
+with a British National Grid polygon and still get WGS84 back:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "wkt": "SRID=27700;POLYGON((320000 670000, 340000 670000, 340000 680000, 320000 680000, 320000 670000))",
+      "properties": ["lex_d"]
+    }
+  }'                                                       # 10 features
+```
+
+**GeoJSON geometry** — what `layer.toGeoJSON()` and
+`GeoJSON().writeGeometryObject()` give you:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-3.25, 55.92], [-3.10, 55.92], [-3.10, 56.00],
+                         [-3.25, 56.00], [-3.25, 55.92]]]
+      }
+    }
+  }'                                                        # 2 features
+```
+
+**GeoJSON FeatureCollection** — post `draw.getAll()` straight through; two
+drawn boxes are merged into one area of interest:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.boreholes",
+      "geometry": {
+        "type": "FeatureCollection",
+        "features": [
+          {"type": "Feature", "properties": {}, "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[-3.25, 55.92], [-3.15, 55.92], [-3.15, 56.00],
+                             [-3.25, 56.00], [-3.25, 55.92]]]}},
+          {"type": "Feature", "properties": {}, "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[-2.95, 56.05], [-2.85, 56.05], [-2.85, 56.15],
+                             [-2.95, 56.15], [-2.95, 56.05]]]}}
+        ]
+      }
+    }
+  }'                    # 3 features: BH001 and BH002 from the first box,
+                        # BH003 from the second
+```
+
+**bbox** — clip to the map view, here with the guard rails a web map wants:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "srid": 4326,
+      "simplify": true,
+      "properties": ["lex_d", "max_period"]
+    }
+  }'                                                       # 15 features
+```
+
+### Download formats
+
+| `format` | Media type | Notes |
+| --- | --- | --- |
+| `geojson` (default) | `application/geo+json` | a `FeatureCollection` in the response body |
+| `gpkg` | `application/geopackage+sqlite3` | GeoPackage, one layer named after the source table; what QGIS and ArcGIS want |
+| `fgb` | `application/flatgeobuf` | FlatGeobuf: same data, far smaller, streams into OpenLayers and MapLibre |
+
+`geopackage` and `flatgeobuf` are accepted as aliases.
+
+The same clip in each format — 15 features of the bedrock layer, all
+attributes:
+
+```bash
+# GeoJSON: the default, straight into a map or jq
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02]
+    }
+  }' -o bedrock.geojson
+
+# GeoPackage: open it in QGIS
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "gpkg"
+    }
+  }' -o bedrock.gpkg                                          # ~116 kB
+
+# FlatGeobuf: the same data for the browser
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_bedrock_geology",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "fgb"
+    }
+  }' -o bedrock.fgb                                            # ~25 kB
+```
+
+`output_srid` applies to the file too, so this one opens in QGIS as British
+National Grid:
+
+```bash
+curl -s -X POST http://localhost:5000/processes/clip/execution \
+  -H 'Content-Type: application/json' -d '{
+    "inputs": {
+      "table": "public.625k_v5_faults",
+      "bbox": [-3.30, 55.90, -3.05, 56.02],
+      "format": "gpkg",
+      "output_srid": 27700
+    }
+  }' -o faults-bng.gpkg
+```
+
+The files are written with OGR (through fiona, which the pygeoapi image
+ships as `python3-fiona`); a server without it still serves GeoJSON and
+refuses the other two with a clear error.
+
+**Swagger UI cannot show you these.** The `/openapi?f=html` console prints
+*Unrecognized response type; displaying content as text* and dumps the bytes,
+which look like `SQLite format 3...GPKG...`. That is the console, not the
+server: pygeoapi declares a single media type for a process response (it
+takes the first output's `contentMediaType`, defaulting to
+`application/json`), so a reply of `application/geopackage+sqlite3` is a type
+the page was never told about. The body is a valid file — save it and it
+opens in QGIS. Use `curl -o`, or in a browser:
+
+```js
+const response = await fetch(`${API}/processes/clip/execution`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({inputs: {table: TABLE, bbox: bbox, format: 'gpkg'}})
+});
+const url = URL.createObjectURL(await response.blob());
+Object.assign(document.createElement('a'),
+              {href: url, download: 'clip.gpkg'}).click();
+URL.revokeObjectURL(url);
+```
+
+On Windows, PowerShell mangles the quoting in the `curl` examples above, so
+either use `Invoke-WebRequest`:
+
+```powershell
+$body = @{
+  inputs = @{
+    table  = 'public.boreholes'
+    bbox   = @(-3.20, 55.94, -3.15, 55.97)
+    format = 'gpkg'
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-WebRequest -Uri 'http://localhost:5000/processes/clip/execution' `
+  -Method Post -ContentType 'application/json' -Body $body `
+  -OutFile boreholes.gpkg
+
+# it is a GeoPackage if these say "SQLite format 3" and "GPKG"
+$bytes = [System.IO.File]::ReadAllBytes("$PWD\boreholes.gpkg")
+[Text.Encoding]::ASCII.GetString($bytes[0..14])
+[Text.Encoding]::ASCII.GetString($bytes[68..71])
+```
+
+or keep the body in a file and hand it to the real `curl.exe`:
+
+```powershell
+'{"inputs":{"table":"public.boreholes","bbox":[-3.20,55.94,-3.15,55.97],"format":"gpkg"}}' `
+  | Set-Content request.json -Encoding utf8
+
+curl.exe -s -X POST http://localhost:5000/processes/clip/execution `
+  -H "Content-Type: application/json" --data-binary "@request.json" `
+  -o boreholes.gpkg
+```
+
+To look inside it without installing GDAL, use the image compose already
+pulls:
+
+```powershell
+docker run --rm -v "${PWD}:/data" ghcr.io/osgeo/gdal:alpine-small-latest `
+  ogrinfo -so /data/boreholes.gpkg boreholes
+```
+
+Worth knowing before you wire up a download button:
+
+* the file carries the **output** CRS, so `output_srid` applies to it as
+  well; a source table with SRID 0 produces a file without a CRS;
+* pygeoapi gives a process no control over response headers, so there is no
+  `Content-Disposition` — the browser names the download after the URL
+  unless you set the name yourself (`<a download="bedrock.gpkg">`, or
+  `-o` with curl);
+* binary formats need the default raw response. Asking for
+  `"response": "document"` wraps the output in JSON, which bytes cannot go
+  into;
+* use async (`Prefer: respond-async`) for large exports and collect the file
+  from `/jobs/{id}/results`;
+* `numberReturned` and `truncated` live in the GeoJSON response, not in the
+  file, so a `limit` that was hit is invisible in a download — check the
+  feature count, or ask for GeoJSON first;
+* attribute columns come out in PostgreSQL's `jsonb` key order rather than
+  the table's column order, booleans are written as `0`/`1` (OGR via fiona
+  has no boolean field type), and FlatGeobuf reorders features into its
+  spatial index.
 
 ### From a web map
 
@@ -379,7 +615,8 @@ pygeoapi serve
 
 ```
 geoclip/db.py                     PostGIS access: catalogue + clip SQL
-geoclip/geometry.py               WKT/EWKT parsing and validation
+geoclip/formats.py                GeoPackage and FlatGeobuf writers
+geoclip/geometry.py               WKT/GeoJSON/bbox clip area parsing
 geoclip/processes/clip.py         ClipProcessor
 geoclip/processes/list_tables.py  ListTablesProcessor
 geoclip/processes/common.py       config, input unwrapping, error mapping

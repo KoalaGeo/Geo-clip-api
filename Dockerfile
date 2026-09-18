@@ -24,7 +24,10 @@ RUN /venv/bin/python3 -m pip install --no-cache-dir --no-deps /geo-clip-api \
     && /venv/bin/python3 -c "\
 from geoclip.processes.clip import ClipProcessor; \
 from geoclip.processes.list_tables import ListTablesProcessor; \
-print('geoclip plugins importable')"
+print('geoclip plugins importable')" \
+    && { /venv/bin/python3 -c "\
+import fiona; print('fiona', fiona.__version__, 'GDAL', fiona.__gdal_version__)" \
+       || echo 'WARNING: fiona missing, gpkg and fgb output will be refused'; }
 
 # pygeoapi reads /pygeoapi/local.config.yml unless PYGEOAPI_CONFIG says
 # otherwise; mount your own over this one to change published tables

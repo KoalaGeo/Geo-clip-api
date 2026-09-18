@@ -17,8 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 server = ["pygeoapi>=0.16"]
+# GeoPackage and FlatGeobuf output; the pygeoapi image ships python3-fiona,
+# so the Dockerfile does not install this
+formats = ["fiona>=1.9"]
 dev = [
     "pygeoapi>=0.16",
+    "fiona>=1.9",
     "pytest>=7.0",
     "flake8>=6.0",
 ]

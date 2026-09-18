@@ -120,6 +120,33 @@ jobs:
           cat clipped.json
           jq -e '.type == "FeatureCollection" and (.features | length) == 2' clipped.json
 
+      # proves the image can actually write the binary formats, i.e. that
+      # the base image still ships fiona/GDAL
+      - name: Execute clip as GeoPackage
+        run: |
+          curl -sf -X POST http://localhost:80/processes/clip/execution \
+            -H 'Content-Type: application/json' \
+            -d '{"inputs":{"table":"public.boreholes","wkt":"POLYGON((-3.25 55.92, -3.10 55.92, -3.10 56.00, -3.25 56.00, -3.25 55.92))","format":"gpkg"}}' \
+            -o clipped.gpkg
+          python3 - <<'PY'
+          data = open('clipped.gpkg', 'rb').read()
+          assert data[:15] == b'SQLite format 3', data[:15]
+          assert data[68:72] == b'GPKG', data[68:72]
+          print(f'{len(data)} byte GeoPackage')
+          PY
+
+      - name: Execute clip as FlatGeobuf
+        run: |
+          curl -sf -X POST http://localhost:80/processes/clip/execution \
+            -H 'Content-Type: application/json' \
+            -d '{"inputs":{"table":"public.boreholes","bbox":[-3.25,55.92,-3.10,56.00],"format":"fgb"}}' \
+            -o clipped.fgb
+          python3 - <<'PY'
+          data = open('clipped.fgb', 'rb').read()
+          assert data[:3] == b'fgb', data[:8]
+          print(f'{len(data)} byte FlatGeobuf')
+          PY
+
       - name: Container logs
         if: always()
         run: docker logs geo-clip-api

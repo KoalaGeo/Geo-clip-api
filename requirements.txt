@@ -4,3 +4,6 @@
 # --no-deps and does not need this file.
 psycopg2-binary>=2.9
 shapely>=2.0
+# only needed for the gpkg and fgb output formats; the image has
+# python3-fiona already
+fiona>=1.9

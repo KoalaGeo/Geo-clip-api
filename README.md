@@ -627,6 +627,13 @@ docker/load-geopackage.sh         ogr2ogr load of a GeoPackage into PostGIS
 docker/initdb/                    demo data for docker compose
 ```
 
+## Running it behind a shop
+
+`BIGCOMMERCE.md` has the integration notes for using this as the engine of a
+data shop: the queue/worker shape on Kubernetes, why pygeoapi's own async
+jobs do not survive more than one replica, and how to price an order by row
+count or by area without doing the work twice.
+
 ## Known limitations
 
 * only `geometry` columns are listed; `geography` columns are not (cast them

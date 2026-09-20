@@ -163,6 +163,68 @@ tables and nothing else.
   (nginx-ingress defaults to 60s, Istio to 15s) <= the worker's job timeout.
   The ingress default is the one that usually truncates a long export.
 
+## Prior art
+
+Worth knowing what already exists before extending this, and where the ideas
+came from.
+
+**GeoServer clips, but not through WFS.** WFS GetFeature offers `bbox` and
+`cql_filter` — selection, not clipping — which is the usual reason people
+conclude it cannot do this. Clipping lives elsewhere:
+
+* [`gs:Clip`](https://geoserver.geosolutionsgroup.com/edu/en/wps/vector_processes.html)
+  (WPS) clips a FeatureCollection against a polygon, with the polygon in the
+  layer's native CRS;
+* the [WMS `clip` vendor parameter](https://docs.geoserver.org/stable/en/user/services/wms/vendor.html)
+  masks rendered output with a WKT polygon;
+* the [WPS Download extension](https://docs.geoserver.org/stable/en/user/extensions/wps-download/index.html)
+  is the closest existing thing to this shop: it downloads layers as zips,
+  clips vectors to an `ROI` with `cropToROI`, writes GeoPackage among other
+  [formats](https://docs.geoserver.org/stable/en/user/extensions/wps-download/rawDownload.html),
+  and runs asynchronously.
+
+**Steal the estimator.** That module ships `gs:DownloadEstimator` alongside
+`gs:Download`: a pre-flight check of how large the answer would be, used to
+enforce limits. Somebody else building extraction concluded you must size an
+order before you extract it, which is the same conclusion the pricing section
+above reaches for a different reason. Build the estimate endpoint.
+
+**MapServer** is selection only for this purpose: it clips to the map extent
+when rendering, not to an arbitrary polygon in
+[WFS output](https://mapserver.org/ogc/wfs_server.html).
+
+**[pg_featureserv](https://github.com/CrunchyData/pg_featureserv)** is the
+minimal-code alternative: publish a PostGIS function as
+`/functions/{name}/items.json` with typed parameters, `crs` and `limit`,
+[returning GeoJSON](https://access.crunchydata.com/documentation/pg_featureserv/1.3.1/usage/query_function/).
+A clip function would be about thirty lines of SQL and no Python. It stops at
+GeoJSON, though: no GeoPackage or FlatGeobuf, no process metadata, no jobs,
+and the table allow-listing and geometry validation would still need writing
+somewhere.
+
+**`ogr2ogr -clipsrc`** is the underlying primitive, and the escape hatch for
+orders too large to materialise in memory — stream straight from PostGIS to
+the output format. `docker/load-geopackage.sh` already runs ogr2ogr in the
+other direction.
+
+**[HOT Export Tool](https://www.hotosm.org/en/tools-resources/tech-product-suite/hot-export-tool/)**
+(backend: [hotosm/raw-data-api](https://github.com/hotosm/raw-data-api)) is
+the same workflow in the open: draw an area, choose features and formats
+(GeoPackage, Shapefile, FlatGeobuf, GeoJSON, KML), submit a job, collect a
+download link. OSM-specific data model, but the order to artifact to link
+pattern is the one this document describes.
+
+pygeoapi's own `ShapelyFunctions` process is not a substitute: it operates on
+geometries the caller supplies, not on a database table.
+
+**Why this repository still exists.** Nothing above does the whole
+combination: OGC API - Processes, a PostGIS table clipped by WKT, GeoJSON or
+bbox, GeoPackage or FlatGeobuf out, configured entirely by environment
+variables, in a container that is not a Java stack. If that stops being true,
+or if the shop needs raster extraction as well, GeoServer's WPS Download is
+the thing to re-evaluate against — it solves a superset of this problem at
+the cost of running GeoServer.
+
 ## Still to build
 
 | Piece | Notes |

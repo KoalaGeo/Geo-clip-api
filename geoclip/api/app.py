@@ -27,17 +27,18 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from geoclip import __version__
 from geoclip.api.models import (ClipRequest, EstimateRequest,
-                                EstimateResponse, Problem, TableInfo,
-                                TableList)
+                                EstimateResponse, OnLimit, OutputFormat,
+                                Problem, TableInfo, TableList)
 from geoclip.db import ClipDatabase, parse_simplify
 from geoclip.errors import (DatabaseError, GeoClipError, InvalidInputError,
                             TableNotFoundError)
@@ -75,6 +76,15 @@ CLIP_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     503: {'model': Problem, 'description': 'Database unavailable'}
 }
 
+TABLE_DESCRIPTION = 'Table to clip, as "table" or "schema.table".'
+
+BBOX_DESCRIPTION = ('Area of interest as minx,miny,maxx,maxy in the srid '
+                    'CRS. Give this or wkt.')
+
+WKT_DESCRIPTION = ('POLYGON or MULTIPOLYGON as WKT, for areas that fit in a '
+                   'URL. Give this or bbox; post a GeoJSON geometry for '
+                   'anything larger.')
+
 DESCRIPTION = """
 Clip data held in PostGIS to an area and download it as GeoJSON,
 GeoPackage or FlatGeobuf.
@@ -83,6 +93,47 @@ The area can be WKT, a GeoJSON geometry/Feature/FeatureCollection, or a
 bounding box, so a Leaflet, OpenLayers or MapLibre client can post what it
 already has. `POST /estimate` sizes an order without building it.
 """
+
+
+def _bbox(value: Optional[str]) -> Optional[List[float]]:
+    """
+    parse a bbox query parameter
+
+    :param value: ``minx,miny,maxx,maxy``, or ``None``
+
+    :returns: `list` of four floats, or ``None``
+
+    :raises: `geoclip.errors.InvalidInputError`
+    """
+
+    if not value:
+        return None
+
+    parts = [part.strip() for part in value.split(',') if part.strip()]
+
+    if len(parts) != 4:
+        raise InvalidInputError(
+            f'bbox must be minx,miny,maxx,maxy, got {value!r}')
+
+    try:
+        return [float(part) for part in parts]
+    except ValueError:
+        raise InvalidInputError(f'bbox must be four numbers, got {value!r}')
+
+
+def _properties(value: Optional[str]) -> Optional[List[str]]:
+    """
+    parse a comma separated list of column names
+
+    :param value: comma separated column names, or ``None``
+
+    :returns: `list` of names, or ``None``
+    """
+
+    if not value:
+        return None
+
+    return [part.strip() for part in value.split(',') if part.strip()] or None
 
 
 def build_database() -> ClipDatabase:
@@ -196,7 +247,28 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         contact={'name': 'KoalaGeo',
                  'url': 'https://github.com/KoalaGeo/Geo-clip-api'},
-        license_info={'name': 'MIT'})
+        license_info={'name': 'MIT'},
+        # replaced below, so that the console's assets can be served from
+        # somewhere reachable in an air-gapped cluster
+        docs_url=None)
+
+    swagger_js = os.environ.get(
+        'GEOCLIP_SWAGGER_JS_URL',
+        'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js')
+    swagger_css = os.environ.get(
+        'GEOCLIP_SWAGGER_CSS_URL',
+        'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css')
+
+    @app.get('/docs', include_in_schema=False)
+    async def docs():
+        # FastAPI's default console loads its JavaScript from a CDN, which
+        # a cluster without egress cannot reach: the page renders empty.
+        # These two variables point it at an internal copy instead.
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=f'{app.title} - Swagger UI',
+            swagger_js_url=swagger_js,
+            swagger_css_url=swagger_css)
 
     origins = [o.strip() for o
                in os.environ.get('GEOCLIP_CORS_ORIGINS', '*').split(',')
@@ -284,11 +356,7 @@ def create_app() -> FastAPI:
 
         return TableInfo(**{**found, 'schema': found['schema']})
 
-    @app.post('/estimate', response_model=EstimateResponse,
-              responses={400: {'model': Problem}, 404: {'model': Problem}},
-              summary='Size an order without building it')
-    async def estimate(request: EstimateRequest,
-                       database: ClipDatabase = Depends(get_database)):
+    def _estimate(request: EstimateRequest, database: ClipDatabase):
         wkt, srid = clip_area(wkt=request.wkt, geometry=request.geometry,
                               bbox=request.bbox, srid=request.srid)
         table = database.get_table(
@@ -309,17 +377,11 @@ def create_app() -> FastAPI:
                                      'requested_area_km2',
                                      'covered_area_km2')})
 
-    # response_class keeps FastAPI from adding a default application/json
-    # entry next to the media types this route really returns
-    @app.post('/clip', responses=CLIP_RESPONSES,
-              summary='Clip a table and download it', response_model=None,
-              response_class=Response)
-    async def clip(request: ClipRequest, http_request: Request,
-                   database: ClipDatabase = Depends(get_database)):
+    def _clip(request: ClipRequest, accept: Optional[str],
+              database: ClipDatabase):
         wkt, srid = clip_area(wkt=request.wkt, geometry=request.geometry,
                               bbox=request.bbox, srid=request.srid)
-        fmt = negotiate(request.format,
-                        http_request.headers.get('accept'))
+        fmt = negotiate(request.format, accept)
         simplify = parse_simplify(request.simplify)
         table = database.get_table(
             request.table, geometry_column=request.geometry_column)
@@ -360,6 +422,100 @@ def create_app() -> FastAPI:
         data = write_collection(collection, fmt, written_srid, table['name'])
 
         return _file_response(data, fmt, table, headers)
+
+    # ---------------------------------------------------------- routes
+
+    @app.post('/estimate', response_model=EstimateResponse,
+              responses={400: {'model': Problem}, 404: {'model': Problem}},
+              summary='Size an order without building it')
+    async def estimate_post(request: EstimateRequest,
+                            database: ClipDatabase = Depends(get_database)):
+        return _estimate(request, database)
+
+    @app.get('/estimate', response_model=EstimateResponse,
+             responses={400: {'model': Problem}, 404: {'model': Problem}},
+             summary='Size an order from query parameters')
+    async def estimate_get(
+            table: str = Query(description=TABLE_DESCRIPTION,
+                               examples=['public.boreholes']),
+            bbox: Optional[str] = Query(
+                default=None, description=BBOX_DESCRIPTION,
+                examples=['-3.30,55.90,-3.05,56.02']),
+            wkt: Optional[str] = Query(default=None,
+                                       description=WKT_DESCRIPTION),
+            srid: int = Query(default=4326, gt=0,
+                              description='EPSG code of the clip area.'),
+            geometry_column: Optional[str] = Query(default=None),
+            format: OutputFormat = Query(
+                default=OutputFormat.geojson,
+                description='Format to size the download in.'),
+            exact_area: bool = Query(
+                default=False,
+                description='Union the clipped geometries instead of '
+                            'summing their areas.'),
+            limit: Optional[int] = Query(default=None, gt=0),
+            database: ClipDatabase = Depends(get_database)):
+        return _estimate(
+            EstimateRequest(table=table, bbox=_bbox(bbox), wkt=wkt,
+                            srid=srid, geometry_column=geometry_column,
+                            format=format.value, exact_area=exact_area,
+                            limit=limit),
+            database)
+
+    # response_class keeps FastAPI from adding a default application/json
+    # entry next to the media types this route really returns
+    @app.post('/clip', responses=CLIP_RESPONSES,
+              summary='Clip a table and download it', response_model=None,
+              response_class=Response)
+    async def clip_post(request: ClipRequest, http_request: Request,
+                        database: ClipDatabase = Depends(get_database)):
+        return _clip(request, http_request.headers.get('accept'), database)
+
+    @app.get('/clip', responses=CLIP_RESPONSES, response_model=None,
+             response_class=Response,
+             summary='Clip a table from query parameters, as a link')
+    async def clip_get(
+            http_request: Request,
+            table: str = Query(description=TABLE_DESCRIPTION,
+                               examples=['public.boreholes']),
+            bbox: Optional[str] = Query(
+                default=None, description=BBOX_DESCRIPTION,
+                examples=['-3.30,55.90,-3.05,56.02']),
+            wkt: Optional[str] = Query(default=None,
+                                       description=WKT_DESCRIPTION),
+            srid: int = Query(default=4326, gt=0,
+                              description='EPSG code of the clip area.'),
+            output_srid: Optional[int] = Query(
+                default=None, gt=0,
+                description='EPSG code of the returned geometries.'),
+            geometry_column: Optional[str] = Query(default=None),
+            properties: Optional[str] = Query(
+                default=None,
+                description='Comma separated columns to return.'),
+            limit: Optional[int] = Query(default=None, gt=0),
+            clip: bool = Query(
+                default=True,
+                description='False returns intersecting features whole.'),
+            simplify: Optional[str] = Query(
+                default=None,
+                description='true, false, or a tolerance in output CRS '
+                            'units.'),
+            format: Optional[OutputFormat] = Query(
+                default=None,
+                description='Overrides the Accept header.'),
+            on_limit: OnLimit = Query(
+                default=OnLimit.error,
+                description='error refuses an order larger than the limit.'),
+            database: ClipDatabase = Depends(get_database)):
+        return _clip(
+            ClipRequest(
+                table=table, bbox=_bbox(bbox), wkt=wkt, srid=srid,
+                output_srid=output_srid, geometry_column=geometry_column,
+                properties=_properties(properties), limit=limit, clip=clip,
+                simplify=simplify,
+                format=format.value if format else None,
+                on_limit=on_limit.value),
+            http_request.headers.get('accept'), database)
 
     return app
 

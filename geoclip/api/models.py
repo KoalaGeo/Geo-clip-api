@@ -8,9 +8,31 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class OutputFormat(str, Enum):
+    """the formats a download can be asked for by name
+
+    An enum rather than a plain string so that it renders as a drop-down
+    in the API console; the request body still accepts the aliases
+    (geopackage, flatgeobuf) that `geoclip.formats` knows about.
+    """
+
+    geojson = 'geojson'
+    gpkg = 'gpkg'
+    fgb = 'fgb'
+
+
+class OnLimit(str, Enum):
+    """what to do with an order larger than the limit"""
+
+    error = 'error'
+    truncate = 'truncate'
+
 
 CLIP_AREA_DESCRIPTION = (
     'Give exactly one of wkt, geometry or bbox.'

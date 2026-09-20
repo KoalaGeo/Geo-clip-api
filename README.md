@@ -87,10 +87,25 @@ POSTGRES_HOST=localhost POSTGRES_DB=geodata \
 | Endpoint | What it does |
 | --- | --- |
 | `GET /tables`, `GET /tables/{name}` | what can be clipped |
-| `POST /estimate` | rows, covered area and download size, without building it |
-| `POST /clip` | the download |
+| `POST /estimate`, `GET /estimate` | rows, covered area and download size, without building it |
+| `POST /clip`, `GET /clip` | the download |
 | `GET /healthz`, `GET /readyz` | liveness (no database) and readiness (database) |
 | `GET /docs`, `GET /openapi.json` | the API description |
+
+`POST` takes a JSON body and accepts any clip area, including a drawn
+GeoJSON `FeatureCollection`. `GET` takes query parameters and so is
+limited to a bbox or a WKT polygon short enough to survive a URL — but it
+gives you a **download as a link**:
+
+```html
+<a href="http://localhost:5001/clip?table=public.625k_v5_bedrock_geology&bbox=-3.30,55.90,-3.05,56.02&format=gpkg"
+   download>Download this area</a>
+```
+
+No JavaScript, no `Blob`, and the file lands with the name the service
+sends. It is also cacheable, and `FileResponse` serves Range requests, so a
+FlatGeobuf URL can be read directly by the fgb client in MapLibre or
+OpenLayers.
 
 What it does that the process cannot:
 
@@ -132,6 +147,19 @@ curl -s -X POST http://localhost:5001/clip \
 ```
 
 `curl -OJ` uses the filename the service sends.
+
+### The API console
+
+`/docs` is the usual Swagger UI. On the `GET` operations `format`,
+`on_limit` and `clip` render as drop-downs, because a drop-down comes from
+an enum *parameter*; a JSON request body is always a text area, whatever
+its schema says. That is the practical reason to have the `GET` twins at
+all beyond linkable downloads.
+
+FastAPI loads the console's JavaScript from a CDN, which a cluster without
+egress cannot reach — the page renders empty. Point it at an internal copy
+with `GEOCLIP_SWAGGER_JS_URL` and `GEOCLIP_SWAGGER_CSS_URL`; the assets
+must be Swagger UI 5 or later, since the document is OpenAPI 3.1.
 
 ### Estimating
 

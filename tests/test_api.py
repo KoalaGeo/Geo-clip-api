@@ -292,3 +292,112 @@ def test_openapi_declares_every_download_media_type(client):
                             'application/flatgeobuf'}
     assert content['application/geopackage+sqlite3']['schema']['format'] == \
         'binary'
+
+
+# ------------------------------------------------------- GET, as a link
+
+def test_get_clip_works_as_a_url(client):
+    response = client.get('/clip', params={'table': TABLE,
+                                           'bbox': '-3.30,55.90,-3.05,56.02'})
+
+    assert response.status_code == 200
+    assert response.json()['type'] == 'FeatureCollection'
+
+
+def test_get_clip_takes_wkt_too(client):
+    response = client.get('/clip', params={'table': TABLE, 'wkt': POLYGON})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize('fmt,media', [
+    ('gpkg', 'application/geopackage+sqlite3'),
+    ('fgb', 'application/flatgeobuf'),
+    ('geojson', 'application/geo+json')
+])
+def test_get_clip_formats(client, fmt, media):
+    pytest.importorskip('fiona')
+    response = client.get('/clip', params={'table': TABLE,
+                                           'bbox': '-3.30,55.90,-3.05,56.02',
+                                           'format': fmt})
+
+    assert response.headers['content-type'] == media
+
+
+def test_get_clip_passes_the_options_through(client, database):
+    client.get('/clip', params={'table': TABLE,
+                                'bbox': '-3.30,55.90,-3.05,56.02',
+                                'properties': 'name, depth_m',
+                                'clip': 'false', 'simplify': 'true',
+                                'output_srid': 27700,
+                                'on_limit': 'truncate'})
+
+    kwargs = [c for c in database.calls if c[0] == 'clip'][0][2]
+    assert kwargs['properties'] == ['name', 'depth_m']
+    assert kwargs['clip_geometries'] is False
+    assert kwargs['simplify'] is True
+    assert kwargs['output_srid'] == 27700
+
+
+def test_get_clip_refuses_an_order_over_the_limit(client):
+    response = client.get('/clip', params={'table': TABLE,
+                                           'bbox': '-3.30,55.90,-3.05,56.02',
+                                           'limit': 1})
+
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize('bbox', ['1,2,3', 'a,b,c,d', '1,2,3,4,5'])
+def test_get_clip_rejects_a_bad_bbox(client, bbox):
+    response = client.get('/clip', params={'table': TABLE, 'bbox': bbox})
+
+    assert response.status_code == 400
+    assert response.json()['title'] == 'Invalid request'
+
+
+def test_get_clip_rejects_an_unknown_format(client):
+    # an enum parameter, so this one is caught before the handler
+    response = client.get('/clip', params={'table': TABLE,
+                                           'bbox': '-3.30,55.90,-3.05,56.02',
+                                           'format': 'shp'})
+
+    assert response.status_code == 422
+
+
+def test_get_estimate_works_as_a_url(client):
+    body = client.get('/estimate', params={'table': TABLE,
+                                           'bbox': '-3.30,55.90,-3.05,56.02',
+                                           'format': 'fgb'}).json()
+
+    assert body['rows'] == 2
+    assert body['format'] == 'fgb'
+
+
+def test_get_and_post_agree(client):
+    params = {'table': TABLE, 'bbox': '-3.30,55.90,-3.05,56.02'}
+    from_get = client.get('/estimate', params=params).json()
+    from_post = client.post('/estimate', json={'table': TABLE,
+                                               'bbox': [-3.30, 55.90,
+                                                        -3.05, 56.02]}).json()
+
+    assert from_get == from_post
+
+
+# the drop-downs in the API console come from enum *parameters*; a JSON
+# body is rendered as a text area whatever its schema says
+@pytest.mark.parametrize('name,values', [
+    ('format', ['geojson', 'gpkg', 'fgb']),
+    ('on_limit', ['error', 'truncate'])
+])
+def test_enum_query_parameters_are_declared(client, name, values):
+    spec = client.get('/openapi.json').json()
+    parameters = {p['name']: p
+                  for p in spec['paths']['/clip']['get']['parameters']}
+    schema = parameters[name]['schema']
+
+    reference = schema.get('$ref') or [
+        option.get('$ref') for option in schema.get('anyOf', [])
+        if option.get('$ref')][0]
+    enum = spec['components']['schemas'][reference.split('/')[-1]]['enum']
+
+    assert enum == values

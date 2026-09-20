@@ -1,0 +1,45 @@
+# =================================================================
+#
+# Geo clip API: the standalone download service
+#
+# No pygeoapi, no GeoServer, no system GDAL: fiona and shapely ship
+# manylinux wheels with their libraries bundled, so this is a slim image
+# running uvicorn.
+#
+# =================================================================
+
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="geo-clip-download-api"
+LABEL org.opencontainers.image.description="Clip PostGIS data and download it as GeoJSON, GeoPackage or FlatGeobuf"
+LABEL org.opencontainers.image.source="https://github.com/KoalaGeo/Geo-clip-api"
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8000 \
+    WEB_CONCURRENCY=4
+
+WORKDIR /app
+
+COPY pyproject.toml README.md /app/
+COPY geoclip /app/geoclip
+
+RUN pip install --no-cache-dir ".[api,formats]" \
+    && python -c "\
+import fiona, shapely, psycopg2; \
+from geoclip.api import app; \
+print('fiona', fiona.__version__, 'GDAL', fiona.__gdal_version__)"
+
+# uvicorn workers are processes, so psycopg2 blocking a request does not
+# stall its neighbours the way it does under the gevent workers in the
+# pygeoapi image
+RUN useradd --create-home --uid 10001 geoclip
+USER geoclip
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD python -c "import urllib.request,os; \
+urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", 8000)}/healthz').read()"
+
+CMD ["sh", "-c", "uvicorn geoclip.api:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}"]

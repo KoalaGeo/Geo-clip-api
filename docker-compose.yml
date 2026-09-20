@@ -69,5 +69,26 @@ services:
     ports:
       - "5000:80"
 
+  # the standalone download service: same library, no pygeoapi
+  download-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gpkg-loader:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: geodata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      GEOCLIP_MAX_FEATURES: 10000
+      GEOCLIP_CORS_ORIGINS: "*"
+    ports:
+      - "5001:8000"
+
 volumes:
   pgdata:

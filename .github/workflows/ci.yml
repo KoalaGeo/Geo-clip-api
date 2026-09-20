@@ -151,9 +151,91 @@ jobs:
         if: always()
         run: docker logs geo-clip-api
 
+  download-api:
+    runs-on: ubuntu-latest
+
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: geodata
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d geodata"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -f Dockerfile.api -t geo-clip-download-api .
+
+      - name: Load demo data
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d geodata -f docker/initdb/01-demo-data.sql
+
+      - name: Start the service
+        run: |
+          docker run -d --name download-api --network host \
+            -e POSTGRES_HOST=127.0.0.1 \
+            -e POSTGRES_DB=geodata \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            geo-clip-download-api
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8000/readyz > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          echo 'service did not become ready'
+          exit 1
+
+      - name: Tables and estimate
+        run: |
+          curl -sf http://localhost:8000/tables | jq -e '.count >= 2'
+          curl -sf -X POST http://localhost:8000/estimate \
+            -H 'Content-Type: application/json' \
+            -d '{"table":"public.boreholes","bbox":[-3.25,55.92,-3.10,56.00]}' \
+            | tee estimate.json | jq -e '.rows == 2 and .within_limit == true'
+
+      - name: Download a GeoPackage with a filename
+        run: |
+          curl -sf -X POST http://localhost:8000/clip \
+            -H 'Content-Type: application/json' \
+            -d '{"table":"public.boreholes","bbox":[-3.25,55.92,-3.10,56.00],"format":"gpkg"}' \
+            -D headers.txt -o clipped.gpkg
+          grep -i 'content-type: application/geopackage+sqlite3' headers.txt
+          grep -i 'content-disposition: attachment; filename="boreholes_' headers.txt
+          python3 - <<'PY'
+          data = open('clipped.gpkg', 'rb').read()
+          assert data[:15] == b'SQLite format 3', data[:15]
+          assert data[68:72] == b'GPKG', data[68:72]
+          print(f'{len(data)} byte GeoPackage')
+          PY
+
+      - name: An order over the limit is refused
+        run: |
+          status=$(curl -s -o refused.json -w '%{http_code}' -X POST http://localhost:8000/clip \
+            -H 'Content-Type: application/json' \
+            -d '{"table":"public.boreholes","bbox":[-3.25,55.92,-3.10,56.00],"limit":1}')
+          test "$status" = "413"
+          jq -e '.rows == 2 and .limit == 1' refused.json
+
+      - name: Service logs
+        if: always()
+        run: docker logs download-api
+
   publish:
     # only after the unit tests and the container smoke test pass
-    needs: [test, docker]
+    needs: [test, docker, download-api]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
@@ -197,5 +279,30 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # the standalone download service is published alongside, as
+      # ghcr.io/<owner>/<repo>-download
+      - name: Download service image tags
+        id: meta-download
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-download
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push the download service
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: ${{ steps.meta-download.outputs.tags }}
+          labels: ${{ steps.meta-download.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

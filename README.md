@@ -4,6 +4,20 @@ pygeoapi plugins that clip data held in PostGIS to a WKT polygon and hand it
 back as GeoJSON, plus a Docker image that serves them from the official
 pygeoapi base image.
 
+There are two ways to serve it, over one clipping library:
+
+| | `geoclip.processes` (pygeoapi) | `geoclip.api` (FastAPI) |
+| --- | --- | --- |
+| Speaks | OGC API - Processes | plain HTTP, download shaped |
+| Good for | an interactive, standards-conformant API | selling and delivering files |
+| Image | `Dockerfile` (pygeoapi base, ~1 GB) | `Dockerfile.api` (python slim) |
+| Port in compose | 5000 | 5001 |
+
+The **[download service](#download-service)** exists because a process
+response cannot set `Content-Disposition`, its generated OpenAPI can only
+declare one media type, and its job manager does not survive a second
+replica. Same library, same validation, same formats.
+
 Two [pygeoapi process plugins](https://docs.pygeoapi.io/en/latest/plugins.html)
 (OGC API - Processes) are published:
 
@@ -58,6 +72,84 @@ The response is a GeoJSON `FeatureCollection`:
 
 Process metadata lives at `/processes/clip` and `/processes/list-tables`, and
 the whole API is described at `/openapi`.
+
+## Download service
+
+`geoclip.api` is a FastAPI application over the same library, with no
+pygeoapi in it. `docker compose up` serves it on port 5001; on its own:
+
+```bash
+pip install -e ".[api,formats]"
+POSTGRES_HOST=localhost POSTGRES_DB=geodata \
+  uvicorn geoclip.api:app --port 8000
+```
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /tables`, `GET /tables/{name}` | what can be clipped |
+| `POST /estimate` | rows, covered area and download size, without building it |
+| `POST /clip` | the download |
+| `GET /healthz`, `GET /readyz` | liveness (no database) and readiness (database) |
+| `GET /docs`, `GET /openapi.json` | the API description |
+
+What it does that the process cannot:
+
+* **names the file** — `Content-Disposition: attachment;
+  filename="625k_v5_bedrock_geology_20260920T173519Z.gpkg"`;
+* **negotiates content** — `format` in the body, or an `Accept` header of
+  `application/geo+json`, `application/geopackage+sqlite3` or
+  `application/flatgeobuf`;
+* **refuses an order it cannot fill** — the default `on_limit=error`
+  answers `413` with the row count and the limit rather than quietly
+  returning the first N features. `on_limit=truncate` restores the old
+  behaviour, and every response carries `X-Geoclip-Rows` and
+  `X-Geoclip-Truncated`;
+* **declares all three media types in its OpenAPI**, so a browser console
+  offers a download instead of printing a GeoPackage as text;
+* **errors as `application/problem+json`** (RFC 9457) with `400`, `404`,
+  `413` and `503` meaning what they should.
+
+```bash
+# what would this order contain?
+curl -s -X POST http://localhost:5001/estimate \
+  -H 'Content-Type: application/json' -d '{
+    "table": "public.625k_v5_bedrock_geology",
+    "bbox": [-3.30, 55.90, -3.05, 56.02],
+    "format": "gpkg"
+  }'
+# {"table":"public.625k_v5_bedrock_geology","rows":15,"vertices":444,
+#  "requested_area_km2":208.62,"covered_area_km2":123.94,"format":"gpkg",
+#  "estimated_bytes":98304,"limit":1000,"within_limit":true}
+
+# take it
+curl -s -X POST http://localhost:5001/clip \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/flatgeobuf' -OJ -d '{
+    "table": "public.625k_v5_bedrock_geology",
+    "bbox": [-3.30, 55.90, -3.05, 56.02],
+    "simplify": true
+  }'
+```
+
+`curl -OJ` uses the filename the service sends.
+
+### Estimating
+
+`POST /estimate` answers the two questions a shop asks — how many rows, and
+how much area with data in it — plus a size prediction, in one pass that
+costs a fraction of the clip:
+
+| Order (1:625k bedrock) | Estimate | The clip itself |
+| --- | --- | --- |
+| 15 features, 209 km² | 0.05 s | 0.3 s |
+| 3,486 features, 110,000 km² | 1.4 s | 3.8 s |
+
+The size model is rows × property bytes + vertices × 24, with the vertex
+count scaled by how much of each feature survives the clip; measured
+against real clips it lands within about 20%. `covered_area_km2` sums the
+clipped areas, which double counts where source features overlap each
+other — `exact_area: true` unions them instead, about three times slower.
+Point and line layers have no area, so price those by row.
 
 ## Test data
 

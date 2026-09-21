@@ -21,14 +21,29 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# The wheels bundle GDAL, GEOS and libpq, but they still link four
+# libraries from the base image. python:3.12-slim lacks libexpat1, so
+# importing fiona fails with "libexpat.so.1: cannot open shared object
+# file"; the other three are installed for certainty rather than because
+# they are known to be missing.
+#
+# This is every NEEDED entry of the wheels' shared objects that is neither
+# bundled beside them nor part of glibc. Re-check with `readelf -d` if
+# fiona, shapely or psycopg2-binary are upgraded.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libexpat1 \
+        libgcc-s1 \
+        libstdc++6 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md /app/
 COPY geoclip /app/geoclip
+COPY docker/verify-formats.py /app/docker/verify-formats.py
 
 RUN pip install --no-cache-dir ".[api,formats]" \
-    && python -c "\
-import fiona, shapely, psycopg2; \
-from geoclip.api import app; \
-print('fiona', fiona.__version__, 'GDAL', fiona.__gdal_version__)"
+    && python /app/docker/verify-formats.py
 
 # uvicorn workers are processes, so psycopg2 blocking a request does not
 # stall its neighbours the way it does under the gevent workers in the

@@ -25,6 +25,10 @@ PROCESSES = ('clip', 'list-tables')
 def load(monkeypatch):
     def _load(**environment):
         monkeypatch.setenv('PYGEOAPI_CONFIG', str(CONFIG))
+        # a DSN in the developer's shell would otherwise win over the
+        # POSTGRES_* settings these tests are about
+        for name in ('GEOCLIP_DSN', 'DATABASE_URL'):
+            monkeypatch.delenv(name, raising=False)
         for name, value in environment.items():
             monkeypatch.setenv(name, value)
         return get_config()

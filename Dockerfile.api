@@ -1,0 +1,60 @@
+# =================================================================
+#
+# Geo clip API: the standalone download service
+#
+# No pygeoapi, no GeoServer, no system GDAL: fiona and shapely ship
+# manylinux wheels with their libraries bundled, so this is a slim image
+# running uvicorn.
+#
+# =================================================================
+
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="geo-clip-download-api"
+LABEL org.opencontainers.image.description="Clip PostGIS data and download it as GeoJSON, GeoPackage or FlatGeobuf"
+LABEL org.opencontainers.image.source="https://github.com/KoalaGeo/Geo-clip-api"
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8000 \
+    WEB_CONCURRENCY=4
+
+WORKDIR /app
+
+# The wheels bundle GDAL, GEOS and libpq, but they still link four
+# libraries from the base image. python:3.12-slim lacks libexpat1, so
+# importing fiona fails with "libexpat.so.1: cannot open shared object
+# file"; the other three are installed for certainty rather than because
+# they are known to be missing.
+#
+# This is every NEEDED entry of the wheels' shared objects that is neither
+# bundled beside them nor part of glibc. Re-check with `readelf -d` if
+# fiona, shapely or psycopg2-binary are upgraded.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libexpat1 \
+        libgcc-s1 \
+        libstdc++6 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md /app/
+COPY geoclip /app/geoclip
+COPY docker/verify-formats.py /app/docker/verify-formats.py
+
+RUN pip install --no-cache-dir ".[api,formats]" \
+    && python /app/docker/verify-formats.py
+
+# uvicorn workers are processes, so psycopg2 blocking a request does not
+# stall its neighbours the way it does under the gevent workers in the
+# pygeoapi image
+RUN useradd --create-home --uid 10001 geoclip
+USER geoclip
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD python -c "import urllib.request,os; \
+urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", 8000)}/healthz').read()"
+
+CMD ["sh", "-c", "uvicorn geoclip.api:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}"]

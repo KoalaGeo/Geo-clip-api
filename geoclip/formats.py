@@ -66,6 +66,37 @@ class FormatError(GeoClipError):
     """the requested format cannot be written"""
 
 
+#: measured on a 3,486 feature clip of the 1:625k bedrock layer with all
+#: attributes: GeoPackage 0.64x and FlatGeobuf 0.62x the GeoJSON bytes.
+#: small clips differ (GeoJSON overhead dominates, and a GeoPackage has a
+#: ~100 kB floor), which the floor below covers
+SIZE_RATIOS = {
+    'geojson': 1.0,
+    'gpkg': 0.64,
+    'fgb': 0.62
+}
+
+#: an empty GeoPackage is still about this big
+SIZE_FLOOR = {
+    'gpkg': 98304
+}
+
+
+def estimated_bytes(fmt: str, geojson_bytes: int) -> int:
+    """
+    scale an estimated GeoJSON size to another format
+
+    :param fmt: format key
+    :param geojson_bytes: estimated size as GeoJSON
+
+    :returns: `int` estimated size in the given format
+    """
+
+    scaled = int(geojson_bytes * SIZE_RATIOS.get(fmt, 1.0))
+
+    return max(scaled, SIZE_FLOOR.get(fmt, 0))
+
+
 def parse_format(value: Any) -> str:
     """
     validate the requested output format
